@@ -23,22 +23,22 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install dependencies and Google Chrome
         run: |
-          pip install -r requirements.txt
           sudo apt-get update
+          sudo apt-get install -y wget curl unzip jq fonts-liberation libu2f-udev
 
           # Google Chrome のインストール
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable unzip jq
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
 
       - name: Install matching ChromeDriver
         run: |
-          # 安定版Chromeに対応したChromeDriverのURLを取得
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          echo "Detected Chrome version: $CHROME_VERSION"
+
           DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
-            | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
+            | jq -r --arg ver "$CHROME_VERSION" '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
 
           if [ -z "$DRIVER_URL" ]; then
             echo "❌ ChromeDriver URL が見つかりません"
