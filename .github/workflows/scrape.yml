@@ -28,19 +28,23 @@ jobs:
           pip install -r requirements.txt
           sudo apt-get update
 
-          # Google公式リポジトリ追加 → Chromeをインストール
+          # Google Chrome の公式リポジトリからインストール
           wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
-          # ChromeDriverもインストール
-          sudo apt-get install -y chromium-chromedriver
+          # Chrome バージョン取得
+          CHROME_VERSION=$(google-chrome-stable --version | grep -oP '\d+\.\d+\.\d+')
 
-          # chromedriver のパスを整備（失敗してもOK）
-          if [ ! -f /usr/bin/chromedriver ]; then
-            sudo ln -s /usr/lib/chromium-browser/chromedriver /usr/bin/chromedriver || true
-          fi
+          # ChromeDriver と同じバージョンをダウンロード
+          DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | grep -A10 "$CHROME_VERSION" | grep "linux64" | grep "chromedriver" | grep -oP 'https://[^"]+')
+
+          echo "Downloading ChromeDriver: $DRIVER_VERSION"
+          curl -sSL "$DRIVER_VERSION" -o chromedriver.zip
+          unzip chromedriver.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
+          sudo chmod +x /usr/bin/chromedriver
 
       - name: Run scraper
         run: python scrape.py
