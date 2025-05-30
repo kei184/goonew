@@ -3,8 +3,8 @@ import time
 import tempfile
 import traceback
 import re
-from datetime import datetime
 from collections import OrderedDict
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -19,11 +19,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # === 1. スプレッドシート設定 ===
 SPREADSHEET_ID = '1LpduIjFPimgUX6g1j5cfLnMT6OayfA5un3it2Z5rwuE'
-SHEET_NAME = '新着物件'
+SHEET_NAME    = '新着物件'
 
 # === 2. Google API設定 ===
 GOOGLE_API_KEY = os.environ['GOOGLE_API_KEY']
-GOOGLE_CSE_ID = os.environ['GOOGLE_CSE_ID']
+GOOGLE_CSE_ID  = os.environ['GOOGLE_CSE_ID']
 
 # === 3. 認証ファイル生成 ===
 def create_credentials_file():
@@ -33,6 +33,7 @@ def create_credentials_file():
 
 # === 4. gooから物件名を取得（詳細ページタイトルから） ===
 def fetch_property_names():
+    # Seleniumで一覧から詳細リンクを取得
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless=new')
@@ -41,15 +42,15 @@ def fetch_property_names():
     options.add_argument('--window-size=1920,1080')
 
     service = Service("/usr/bin/chromedriver")
-    driver = webdriver.Chrome(service=service, options=options)
+    driver  = webdriver.Chrome(service=service, options=options)
     driver.get("https://house.goo.ne.jp/buy/bm/")
-    time.sleep(5)
+    time.sleep(5)  # 必要に応じてWebDriverWaitに置き換え可
 
     elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
     links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
     driver.quit()
 
-    # リンク先の詳細ページからタイトルを取得
+    # HTTPヘッダーでブラウザを模倣
     HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -62,29 +63,33 @@ def fetch_property_names():
     names = []
     for url in links:
         full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-        res = requests.get(full, headers=HEADERS)
+        res  = requests.get(full, headers=HEADERS)
         if res.status_code != 200:
             continue
-        soup = BeautifulSoup(res.text, 'html.parser')
+        soup       = BeautifulSoup(res.text, 'html.parser')
         title_text = soup.title.text.strip() if soup.title else ''
-        # 前置句【…】と後置句（価格・間取り）以降を除去
+
+        # 前置句【…】を削除
         title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
+        # 後置句「（価格・間取り）…」以降を削除
         title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
-        name = title_text.strip() or None
+
+        name = title_text.strip()
         if name:
             names.append(name)
 
-    # 重複を除去しつつ順序を保持
+    # 重複を除去して順序を保持
     unique_names = list(OrderedDict.fromkeys(names))
     return unique_names
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
     search_url = (
-        f"https://www.googleapis.com/customsearch/v1"
+        "https://www.googleapis.com/customsearch/v1"
         f"?q={requests.utils.quote(query)}"
         f"&key={GOOGLE_API_KEY}"
         f"&cx={GOOGLE_CSE_ID}"
+        "&num=1"
     )
     try:
         res = requests.get(search_url)
@@ -100,9 +105,9 @@ def write_to_sheet(names, cred_path):
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
     ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
+    creds  = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
     today = datetime.now().strftime('%Y/%m/%d')
     for name in names:
@@ -113,7 +118,7 @@ def write_to_sheet(names, cred_path):
 # === 7. メイン処理 ===
 def main():
     try:
-        cred = create_credentials_file()
+        cred  = create_credentials_file()
         names = fetch_property_names()
         if not names:
             print("❌ 物件が取得できませんでした。")
