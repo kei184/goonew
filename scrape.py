@@ -39,8 +39,17 @@ def fetch_property_names():
     driver.get("https://house.goo.ne.jp/buy/bm/")
     time.sleep(5)
 
+    # HTMLの一部をログ出力（デバッグ用）
+    print("--- HTML preview ---")
+    print(driver.page_source[:2000])  # 最初の2000文字だけ
+    print("--- end preview ---")
+
     titles = driver.find_elements(By.CSS_SELECTOR, "div.newObjectList__tit")
     property_names = [title.text.strip() for title in titles if title.text.strip()]
+
+    print(f"取得件数: {len(property_names)}")
+    for name in property_names:
+        print(f"- {name}")
 
     driver.quit()
     return property_names
