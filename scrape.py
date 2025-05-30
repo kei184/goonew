@@ -8,18 +8,18 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+
+import requests
+from bs4 import BeautifulSoup
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import requests
 
 # === 1. スプレッドシート設定 ===
 SPREADSHEET_ID = '1LpduIjFPimgUX6g1j5cfLnMT6OayfA5un3it2Z5rwuE'
 SHEET_NAME = '新着物件'
 
-# === 2. Google Custom Search API 設定 ===
+# === 2. Google API設定 ===
 GOOGLE_API_KEY = os.environ['GOOGLE_API_KEY']
 GOOGLE_CSE_ID = os.environ['GOOGLE_CSE_ID']
 
@@ -29,45 +29,49 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得 ===
+# === 4. gooから物件名を取得（詳細ページを巡回） ===
 def fetch_property_names():
+    # Selenium で一覧ページからリンクを取得
     options = Options()
-    # Chromeバイナリは通常こちら
     options.binary_location = "/usr/bin/google-chrome"
-    # 最小限のヘッドレスモード
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
 
-    # ChromeDriverパスを明示
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
+    driver.get("https://house.goo.ne.jp/buy/bm/")
+    time.sleep(5)  # 必要なら WebDriverWait に置き換えても可
 
-    try:
-        driver.get("https://house.goo.ne.jp/buy/bm/")
+    elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
+    links = [a.get_attribute('href') for a in elems]
+    driver.quit()
 
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.newObjectList__tit"))
-        )
+    names = []
+    for url in links:
+        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
+        res = requests.get(full)
+        soup = BeautifulSoup(res.text, 'html.parser')
 
-        titles = driver.find_elements(By.CSS_SELECTOR, "div.newObjectList__tit")
-        names = [t.text.strip() for t in titles if t.text.strip()]
+        # 詳細ページのタイトル要素を探す
+        h1 = soup.find('h1') or soup.find('h2')
+        if h1 and h1.text.strip():
+            names.append(h1.text.strip())
+        else:
+            # クラス名が分かっていれば適宜調整
+            names.append('【タイトル取得失敗】')
 
-        print(f"✅ 取得件数: {len(names)}")
-        for n in names:
-            print("・", n)
-        return names
-
-    finally:
-        driver.quit()
+    print(f"✅ 取得件数: {len(names)}")
+    for n in names:
+        print("・", n)
+    return names
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
     url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
     try:
-        res = requests.get(url)
-        res.raise_for_status()
+        res = requests.get(url); res.raise_for_status()
         items = res.json().get('items', [])
         return items[0]['link'] if items else ''
     except Exception as e:
@@ -87,15 +91,14 @@ def write_to_sheet(names, cred_path):
         sheet.append_row([today, name, url])
         time.sleep(1)
 
-# === 7. メイン処理 ===
 def main():
     try:
-        cred_path = create_credentials_file()
+        cred = create_credentials_file()
         names = fetch_property_names()
         if not names:
             print("❌ 物件が取得できませんでした。")
             return
-        write_to_sheet(names, cred_path)
+        write_to_sheet(names, cred)
         print(f"✅ {len(names)} 件をスプレッドシートに保存しました。")
     except Exception:
         print("❌ 実行時エラー:")
