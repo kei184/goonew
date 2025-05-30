@@ -1,3 +1,20 @@
+import sys
+import traceback
+
+def main():
+    try:
+        credentials_path = create_credentials_file()
+        names = fetch_property_names()
+        print("取得件数:", len(names))
+        for name in names:
+            print("・", name)
+        write_to_sheet(names, credentials_path)
+        print(f"{len(names)} 件をスプレッドシートに保存しました。")
+    except Exception:
+        print("⚠️ エラーが発生しました:")
+        traceback.print_exc(file=sys.stdout)
+
+
 import os
 import json
 import time
