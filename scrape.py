@@ -30,17 +30,15 @@ def create_credentials_file():
 
 # === 4. 物件名取得 ===
 def fetch_property_names():
-    options = Options()
-    # ① or ② のどちらかを選択してください:
-    options.binary_location = "/usr/bin/google-chrome"
-    # options.binary_location = "/usr/bin/chromium-browser"
-    # （あるいは binary_location の行をコメントアウトしてみる）
+options = Options()
+options.binary_location = "/usr/bin/google-chrome-stable"
+options.add_argument('--headless')
+options.add_argument('--no-sandbox')
+options.add_argument('--disable-dev-shm-usage')
+options.add_argument('--single-process')       # 追加
+options.add_argument('--disable-gpu')
+options.add_argument('--window-size=1920,1080')
 
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--window-size=1920,1080')
 
     # Service でドライバパスを明示（PATHにあれば省略可能）
     service = Service("/usr/bin/chromedriver")
