@@ -37,10 +37,18 @@ def fetch_property_names():
     options.add_argument('--window-size=1920,1080')
 
     driver = webdriver.Chrome(options=options)
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
     driver.get("https://house.goo.ne.jp/buy/bm/")
-    time.sleep(5)
+
+    # 最大15秒待つ（要素が出るまで）
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "div.newObjectList__tit"))
+    )
 
     titles = driver.find_elements(By.CSS_SELECTOR, "div.newObjectList__tit")
+
     property_names = [title.text.strip() for title in titles if title.text.strip()]
 
     # 件数出力
