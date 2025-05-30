@@ -27,8 +27,11 @@ jobs:
         run: |
           pip install -r requirements.txt
           sudo apt-get update
+          # Chrome本体をインストール
+          sudo apt-get install -y google-chrome-stable
+          # ChromeDriverをインストール
           sudo apt-get install -y chromium-chromedriver
-          # すでに存在していれば無視するように変更
+          # chromedriverのパスを整備（上書きエラー防止）
           if [ ! -f /usr/bin/chromedriver ]; then
             sudo ln -s /usr/lib/chromium-browser/chromedriver /usr/bin/chromedriver
           fi
