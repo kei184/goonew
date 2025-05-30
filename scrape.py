@@ -49,25 +49,25 @@ def fetch_property_names():
     driver.quit()
 
     names = []
-    for url in links:
-        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-        res = requests.get(full)
-        soup = BeautifulSoup(res.text, 'html.parser')
+      for url in links:
+         full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
+         res = requests.get(full)
+         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # <title>から物件名を抽出（“物件名｜goo住宅・不動産” の前半部分）
-        if soup.title and '｜' in soup.title.string:
-            title = soup.title.string.split('｜', 1)[0].strip()
-        elif soup.title:
-            title = soup.title.string.strip()
-        else:
-            title = '【タイトル取得失敗】'
++        # 4) <title> タグから物件名を抜き出し（余分な前後文言を削除）
++        if not name and soup.title:
++            import re
++            title_text = soup.title.text.strip()
++            # 前置詞句「【goo住宅・不動産】」を削除
++            title_text = re.sub(r'^【goo住宅・不動産】', '', title_text)
++            # 後置詞句「（価格・間取り） 物件情報｜新築マンション・分譲マンション」を削除
++            title_text = re.sub(
++                r'（価格・間取り）\s*物件情報｜新築マンション・分譲マンション$',
++                '',
++                title_text
++            )
++            name = title_text.strip() or '【タイトル取得失敗】'
 
-        names.append(title)
-
-    print(f"✅ 取得件数: {len(names)}")
-    for n in names:
-        print("・", n)
-    return names
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
