@@ -2,6 +2,7 @@ import os
 import time
 import tempfile
 import traceback
+import re
 from datetime import datetime
 
 from selenium import webdriver
@@ -49,31 +50,41 @@ def fetch_property_names():
     driver.quit()
 
     names = []
-      for url in links:
-         full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-         res = requests.get(full)
-         soup = BeautifulSoup(res.text, 'html.parser')
+    for url in links:
+        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
+        res = requests.get(full)
+        soup = BeautifulSoup(res.text, 'html.parser')
 
-+        # 4) <title> タグから物件名を抜き出し（余分な前後文言を削除）
-+        if not name and soup.title:
-+            import re
-+            title_text = soup.title.text.strip()
-+            # 前置詞句「【goo住宅・不動産】」を削除
-+            title_text = re.sub(r'^【goo住宅・不動産】', '', title_text)
-+            # 後置詞句「（価格・間取り） 物件情報｜新築マンション・分譲マンション」を削除
-+            title_text = re.sub(
-+                r'（価格・間取り）\s*物件情報｜新築マンション・分譲マンション$',
-+                '',
-+                title_text
-+            )
-+            name = title_text.strip() or '【タイトル取得失敗】'
+        # <title> タグから物件名を抜き出し（余分な前後文言を削除）
+        name = None
+        if soup.title:
+            title_text = soup.title.text.strip()
+            # 前置詞句「【goo住宅・不動産】」を削除
+            title_text = re.sub(r'^【goo住宅・不動産】', '', title_text)
+            # 後置詞句「（価格・間取り） 物件情報｜新築マンション・分譲マンション」を削除
+            title_text = re.sub(
+                r'（価格・間取り）\s*物件情報｜新築マンション・分譲マンション$',
+                '',
+                title_text
+            )
+            name = title_text.strip()
 
+        if not name:
+            name = '【タイトル取得失敗】'
+
+        names.append(name)
+
+    print(f"✅ 取得件数: {len(names)}")
+    for n in names:
+        print("・", n)
+    return names
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
     url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
     try:
-        res = requests.get(url); res.raise_for_status()
+        res = requests.get(url)
+        res.raise_for_status()
         items = res.json().get('items', [])
         return items[0]['link'] if items else ''
     except Exception as e:
@@ -82,7 +93,7 @@ def get_official_url(query):
 
 # === 6. スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
-    scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
@@ -93,6 +104,7 @@ def write_to_sheet(names, cred_path):
         sheet.append_row([today, name, url])
         time.sleep(1)
 
+# === 7. メイン処理 ===
 def main():
     try:
         cred = create_credentials_file()
