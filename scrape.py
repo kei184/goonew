@@ -32,7 +32,7 @@ def create_credentials_file():
 
 # === 4. gooから物件名を取得（詳細ページタイトルから） ===
 def fetch_property_names():
-    # Selenium で一覧ページからリンクを取得
+    # ① Selenium で一覧ページからリンクを取得
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless=new')
@@ -49,25 +49,34 @@ def fetch_property_names():
     links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
     driver.quit()
 
+    # ② HTTPヘッダーを定義（User-Agent と Referer）
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/114.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://house.goo.ne.jp/buy/bm/"
+    }
+
     names = []
-for url in links:
-    full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-    res = requests.get(full, headers=headers)
-    if res.status_code != 200:
-        print(f"⚠️ スキップ {full} → ステータス {res.status_code}")
-        continue
+    for url in links:
+        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
+        res = requests.get(full, headers=HEADERS)
+        if res.status_code != 200:
+            print(f"⚠️ スキップ {full} → ステータス {res.status_code}")
+            continue
 
-    soup = BeautifulSoup(res.text, 'html.parser')
-    title_text = soup.title.text.strip() if soup.title else ''
+        soup = BeautifulSoup(res.text, 'html.parser')
+        title_text = soup.title.text.strip() if soup.title else ''
 
-    # ブラケット内語句を削除
-    title_text = re.sub(r'【[^】]+】\s*', '', title_text)
-    # 後半句を削除
-    title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
-    name = title_text.strip() or '【タイトル取得失敗】'
+        # ③ ブラケット内語句を削除（前置句）
+        title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
+        # ④ 後半句「（価格・間取り）…」以下を削除
+        title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
 
-    names.append(name)
-
+        name = title_text.strip() or '【タイトル取得失敗】'
+        names.append(name)
 
     print(f"✅ 取得件数: {len(names)}")
     for n in names:
@@ -76,7 +85,10 @@ for url in links:
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
-    search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
+    search_url = (
+        f"https://www.googleapis.com/customsearch/v1"
+        f"?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
+    )
     try:
         res = requests.get(search_url)
         res.raise_for_status()
@@ -88,7 +100,10 @@ def get_official_url(query):
 
 # === 6. スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
