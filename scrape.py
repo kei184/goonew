@@ -29,7 +29,7 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得（詳細ページを巡回） ===
+# === 4. gooから物件名を取得（詳細ページタイトルから） ===
 def fetch_property_names():
     # Selenium で一覧ページからリンクを取得
     options = Options()
@@ -54,13 +54,15 @@ def fetch_property_names():
         res = requests.get(full)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 詳細ページのタイトル要素を探す
-        h1 = soup.find('h1') or soup.find('h2')
-        if h1 and h1.text.strip():
-            names.append(h1.text.strip())
+        # <title>から物件名を抽出（“物件名｜goo住宅・不動産” の前半部分）
+        if soup.title and '｜' in soup.title.string:
+            title = soup.title.string.split('｜', 1)[0].strip()
+        elif soup.title:
+            title = soup.title.string.strip()
         else:
-            # クラス名が分かっていれば適宜調整
-            names.append('【タイトル取得失敗】')
+            title = '【タイトル取得失敗】'
+
+        names.append(title)
 
     print(f"✅ 取得件数: {len(names)}")
     for n in names:
@@ -80,7 +82,7 @@ def get_official_url(query):
 
 # === 6. スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
