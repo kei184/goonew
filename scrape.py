@@ -32,14 +32,15 @@ def create_credentials_file():
 # === 4. gooから物件名を取得 ===
 def fetch_property_names():
     options = Options()
-    options.binary_location = "/usr/bin/google-chrome-stable"
-    options.add_argument('--headless')
+    # Chromeバイナリは通常こちら
+    options.binary_location = "/usr/bin/google-chrome"
+    # 最小限のヘッドレスモード
+    options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-gpu')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--single-process')
     options.add_argument('--window-size=1920,1080')
 
+    # ChromeDriverパスを明示
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
 
@@ -63,9 +64,9 @@ def fetch_property_names():
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
-    search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
+    url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
     try:
-        res = requests.get(search_url)
+        res = requests.get(url)
         res.raise_for_status()
         items = res.json().get('items', [])
         return items[0]['link'] if items else ''
@@ -84,7 +85,7 @@ def write_to_sheet(names, cred_path):
     for name in names:
         url = get_official_url(name)
         sheet.append_row([today, name, url])
-        time.sleep(1)  # API制限対策
+        time.sleep(1)
 
 # === 7. メイン処理 ===
 def main():
