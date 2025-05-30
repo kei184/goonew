@@ -27,3 +27,6 @@ jobs:
 
       - name: Run scraper
         run: python scrape.py
+
+env:
+  GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
