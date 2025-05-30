@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import requests
 
 # === 1. スプレッドシート設定 ===
-SPREADSHEET_ID = 'あなたのスプレッドシートID'
+SPREADSHEET_ID = '1LpduIjFPimgUX6g1j5cfLnMT6OayfA5un3it2Z5rwuE'
 SHEET_NAME = '新着物件'
 
 # === 2. Google Custom Search API 設定 ===
