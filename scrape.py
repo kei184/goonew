@@ -4,6 +4,7 @@ import tempfile
 import traceback
 import re
 from datetime import datetime
+from collections import OrderedDict
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -32,7 +33,6 @@ def create_credentials_file():
 
 # === 4. gooから物件名を取得（詳細ページタイトルから） ===
 def fetch_property_names():
-    # ① Selenium で一覧ページからリンクを取得
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless=new')
@@ -43,13 +43,13 @@ def fetch_property_names():
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
     driver.get("https://house.goo.ne.jp/buy/bm/")
-    time.sleep(5)  # 必要なら WebDriverWait に置き換えても可
+    time.sleep(5)
 
     elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
     links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
     driver.quit()
 
-    # ② HTTPヘッダーを定義（User-Agent と Referer）
+    # リンク先の詳細ページからタイトルを取得
     HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -64,38 +64,34 @@ def fetch_property_names():
         full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
         res = requests.get(full, headers=HEADERS)
         if res.status_code != 200:
-            print(f"⚠️ スキップ {full} → ステータス {res.status_code}")
             continue
-
         soup = BeautifulSoup(res.text, 'html.parser')
         title_text = soup.title.text.strip() if soup.title else ''
-
-        # ③ ブラケット内語句を削除（前置句）
+        # 前置句【…】と後置句（価格・間取り）以降を除去
         title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
-        # ④ 後半句「（価格・間取り）…」以下を削除
         title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
+        name = title_text.strip() or None
+        if name:
+            names.append(name)
 
-        name = title_text.strip() or '【タイトル取得失敗】'
-        names.append(name)
-
-    print(f"✅ 取得件数: {len(names)}")
-    for n in names:
-        print("・", n)
-    return names
+    # 重複を除去しつつ順序を保持
+    unique_names = list(OrderedDict.fromkeys(names))
+    return unique_names
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
     search_url = (
         f"https://www.googleapis.com/customsearch/v1"
-        f"?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
+        f"?q={requests.utils.quote(query)}"
+        f"&key={GOOGLE_API_KEY}"
+        f"&cx={GOOGLE_CSE_ID}"
     )
     try:
         res = requests.get(search_url)
         res.raise_for_status()
         items = res.json().get('items', [])
         return items[0]['link'] if items else ''
-    except Exception as e:
-        print("検索エラー:", e)
+    except Exception:
         return ''
 
 # === 6. スプレッドシートへ記録 ===
@@ -112,7 +108,7 @@ def write_to_sheet(names, cred_path):
     for name in names:
         url = get_official_url(name)
         sheet.append_row([today, name, url])
-        time.sleep(1)
+        time.sleep(1)  # API制限対策
 
 # === 7. メイン処理 ===
 def main():
@@ -122,6 +118,11 @@ def main():
         if not names:
             print("❌ 物件が取得できませんでした。")
             return
+
+        print(f"✅ 取得済み物件（重複除去）: {len(names)} 件")
+        for n in names:
+            print("・", n)
+
         write_to_sheet(names, cred)
         print(f"✅ {len(names)} 件をスプレッドシートに保存しました。")
     except Exception:
