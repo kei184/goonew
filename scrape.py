@@ -32,7 +32,7 @@ def create_credentials_file():
 def fetch_property_names():
     # ChromeOptions 設定
     options = Options()
-    options.binary_location = "/usr/bin/google-chrome-stable"
+    options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-gpu')
