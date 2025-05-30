@@ -31,9 +31,8 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得（詳細ページタイトルから） ===
+# === 4. gooから物件名を取得 ===
 def fetch_property_names():
-    # Seleniumで一覧から詳細リンクを取得
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless=new')
@@ -44,13 +43,12 @@ def fetch_property_names():
     service = Service("/usr/bin/chromedriver")
     driver  = webdriver.Chrome(service=service, options=options)
     driver.get("https://house.goo.ne.jp/buy/bm/")
-    time.sleep(5)  # 必要に応じてWebDriverWaitに置き換え可
+    time.sleep(5)
 
     elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
     links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
     driver.quit()
 
-    # HTTPヘッダーでブラウザを模倣
     HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -68,36 +66,34 @@ def fetch_property_names():
             continue
         soup       = BeautifulSoup(res.text, 'html.parser')
         title_text = soup.title.text.strip() if soup.title else ''
-
-        # 前置句【…】を削除
         title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
-        # 後置句「（価格・間取り）…」以降を削除
         title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
+        if title_text:
+            names.append(title_text)
 
-        name = title_text.strip()
-        if name:
-            names.append(name)
-
-    # 重複を除去して順序を保持
-    unique_names = list(OrderedDict.fromkeys(names))
-    return unique_names
+    return list(OrderedDict.fromkeys(names))
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
-    search_url = (
-        "https://www.googleapis.com/customsearch/v1"
-        f"?q={requests.utils.quote(query)}"
-        f"&key={GOOGLE_API_KEY}"
-        f"&cx={GOOGLE_CSE_ID}"
-        "&num=1"
-    )
+    search_endpoint = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "q":   query,      # 物件名のみ
+        "key": GOOGLE_API_KEY,
+        "cx":  GOOGLE_CSE_ID,
+        "num": 1
+    }
     try:
-        res = requests.get(search_url)
+        res = requests.get(search_endpoint, params=params)
         res.raise_for_status()
-        items = res.json().get('items', [])
-        return items[0]['link'] if items else ''
-    except Exception:
-        return ''
+        data = res.json()
+        # デバッグ: 実際に送っているURLと返り値を確認
+        print("Search URL:", res.url)
+        print("Search response items:", data.get("items"))
+        items = data.get("items") or []
+        return items[0]["link"] if items else ""
+    except Exception as e:
+        print("検索エラー:", e)
+        return ""
 
 # === 6. スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
@@ -113,7 +109,7 @@ def write_to_sheet(names, cred_path):
     for name in names:
         url = get_official_url(name)
         sheet.append_row([today, name, url])
-        time.sleep(1)  # API制限対策
+        time.sleep(1)
 
 # === 7. メイン処理 ===
 def main():
