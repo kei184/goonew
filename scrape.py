@@ -74,26 +74,40 @@ def fetch_property_names():
     return list(OrderedDict.fromkeys(names))
 
 # === 5. Google検索で公式URLを取得 ===
-def get_official_url(query):
+import time
+import requests
+
+def get_official_url(query, max_retries=3):
+    """
+    Google CSE API を叩いて公式URLを取得。
+    429 が返ってきたら指数バックオフでリトライ。
+    """
     search_endpoint = "https://www.googleapis.com/customsearch/v1"
     params = {
-        "q":   query,      # 物件名のみ
+        "q":   query,
         "key": GOOGLE_API_KEY,
         "cx":  GOOGLE_CSE_ID,
         "num": 1
     }
-    try:
+
+    backoff = 1
+    for attempt in range(1, max_retries+1):
         res = requests.get(search_endpoint, params=params)
-        res.raise_for_status()
-        data = res.json()
-        # デバッグ: 実際に送っているURLと返り値を確認
-        print("Search URL:", res.url)
-        print("Search response items:", data.get("items"))
-        items = data.get("items") or []
-        return items[0]["link"] if items else ""
-    except Exception as e:
-        print("検索エラー:", e)
-        return ""
+        if res.status_code == 200:
+            items = res.json().get("items", [])
+            return items[0]["link"] if items else ""
+        elif res.status_code == 429:
+            print(f"⚠️ 429 rate limit hit for '{query}', retry #{attempt} after {backoff}s...")
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        else:
+            print(f"⚠️ CSE error {res.status_code} for '{query}'")
+            break
+
+    # どうしても取れなければ空文字
+    return ""
+
 
 # === 6. スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
