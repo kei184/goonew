@@ -37,11 +37,12 @@ jobs:
           # Chrome バージョン取得（例: 137.0.7151）
           CHROME_VERSION=$(google-chrome-stable --version | grep -oP '\d+\.\d+\.\d+')
 
-          # 対応する ChromeDriver の URL を取得
+          # ChromeDriver URL の取得を安全に実行（".version|tostring" を追加）
           DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | \
             jq -r --arg ver "$CHROME_VERSION" '
               .channels.Stable.downloads.chromedriver[]
-              | select(.platform == "linux64" and (.version | startswith($ver)))
+              | select((.version | tostring) | startswith($ver))
+              | select(.platform == "linux64")
               | .url')
 
           if [ -z "$DRIVER_URL" ]; then
