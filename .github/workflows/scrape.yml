@@ -28,23 +28,25 @@ jobs:
           pip install -r requirements.txt
           sudo apt-get update
 
-          # Google Chrome の公式リポジトリからインストール
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
+          # Google Chrome のインストール
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-linux-signing-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          sudo apt-get install -y google-chrome-stable unzip jq
 
-          # Chrome バージョン取得
+          # Chrome のバージョン取得
           CHROME_VERSION=$(google-chrome-stable --version | grep -oP '\d+\.\d+\.\d+')
 
-          # ChromeDriver と同じバージョンをダウンロード
-          DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | grep -A10 "$CHROME_VERSION" | grep "linux64" | grep "chromedriver" | grep -oP 'https://[^"]+')
+          # 対応する ChromeDriver URL を JSON から取得
+          DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" \
+            | jq -r --arg ver "$CHROME_VERSION" '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64" and .version | startswith($ver)) | .url')
 
-          echo "Downloading ChromeDriver: $DRIVER_VERSION"
-          curl -sSL "$DRIVER_VERSION" -o chromedriver.zip
+          echo "Downloading ChromeDriver from: $DRIVER_URL"
+          curl -sSL "$DRIVER_URL" -o chromedriver.zip
           unzip chromedriver.zip
           sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
           sudo chmod +x /usr/bin/chromedriver
+
 
       - name: Run scraper
         run: python scrape.py
