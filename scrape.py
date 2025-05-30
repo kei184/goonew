@@ -50,23 +50,24 @@ def fetch_property_names():
     driver.quit()
 
     names = []
-    for url in links:
-        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-        res = requests.get(full)
-        soup = BeautifulSoup(res.text, 'html.parser')
+for url in links:
+    full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
+    res = requests.get(full, headers=headers)
+    if res.status_code != 200:
+        print(f"⚠️ スキップ {full} → ステータス {res.status_code}")
+        continue
 
-        # ① <title> 全文を取得
-        title_text = soup.title.text.strip() if soup.title else ''
+    soup = BeautifulSoup(res.text, 'html.parser')
+    title_text = soup.title.text.strip() if soup.title else ''
 
-        # ② 前置句「【…】」をまとめて削除
-        title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
+    # ブラケット内語句を削除
+    title_text = re.sub(r'【[^】]+】\s*', '', title_text)
+    # 後半句を削除
+    title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
+    name = title_text.strip() or '【タイトル取得失敗】'
 
-        # ③ 後置句「（価格・間取り）…」以下をまとめて削除
-        title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
+    names.append(name)
 
-        # ④ 余白を詰めて完成
-        name = title_text.strip() or '【タイトル取得失敗】'
-        names.append(name)
 
     print(f"✅ 取得件数: {len(names)}")
     for n in names:
