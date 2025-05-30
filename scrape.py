@@ -43,12 +43,19 @@ def fetch_property_names():
     titles = driver.find_elements(By.CSS_SELECTOR, "div.newObjectList__tit")
     property_names = [title.text.strip() for title in titles if title.text.strip()]
 
+    # 件数出力
     print(f"✅ 取得件数: {len(property_names)}")
     for name in property_names:
         print(f"- {name}")
 
+    # 🔍 HTML構造を確認（上位1000文字だけ表示）
+    html = driver.page_source
+    print("==== HTML Preview ====")
+    print(html[:1000])
+
     driver.quit()
     return property_names
+
 
 # === 5. Google検索でURLを取得 ===
 def get_official_url(query):
