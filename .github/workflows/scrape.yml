@@ -28,29 +28,24 @@ jobs:
           pip install -r requirements.txt
           sudo apt-get update
 
-          # Google Chrome の公式リポジトリからインストール
+          # Google Chrome のインストール
           wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable unzip jq
 
-          # Chrome バージョン取得（例: 137.0.7151）
-          CHROME_VERSION=$(google-chrome-stable --version | grep -oP '\d+\.\d+\.\d+')
-
-          # ChromeDriver URL の取得を安全に実行（".version|tostring" を追加）
-          DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | \
-            jq -r --arg ver "$CHROME_VERSION" '
-              .channels.Stable.downloads.chromedriver[]
-              | select((.version | tostring) | startswith($ver))
-              | select(.platform == "linux64")
-              | .url')
+      - name: Install matching ChromeDriver
+        run: |
+          # 安定版Chromeに対応したChromeDriverのURLを取得
+          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            | jq -r '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
 
           if [ -z "$DRIVER_URL" ]; then
-            echo "❌ ChromeDriver URL が見つかりません: CHROME_VERSION=$CHROME_VERSION"
+            echo "❌ ChromeDriver URL が見つかりません"
             exit 1
           fi
 
-          echo "✅ ChromeDriver URL: $DRIVER_URL"
+          echo "✅ Downloading ChromeDriver from: $DRIVER_URL"
           curl -sSL "$DRIVER_URL" -o chromedriver.zip
           unzip chromedriver.zip
           sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
