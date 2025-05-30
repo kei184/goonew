@@ -46,7 +46,7 @@ def fetch_property_names():
     time.sleep(5)  # 必要なら WebDriverWait に置き換えても可
 
     elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
-    links = [a.get_attribute('href') for a in elems]
+    links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
     driver.quit()
 
     names = []
@@ -55,23 +55,17 @@ def fetch_property_names():
         res = requests.get(full)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # <title> タグから物件名を抜き出し（余分な前後文言を削除）
-        name = None
-        if soup.title:
-            title_text = soup.title.text.strip()
-            # 前置詞句「【goo住宅・不動産】」を削除
-            title_text = re.sub(r'^【goo住宅・不動産】', '', title_text)
-            # 後置詞句「（価格・間取り） 物件情報｜新築マンション・分譲マンション」を削除
-            title_text = re.sub(
-                r'（価格・間取り）\s*物件情報｜新築マンション・分譲マンション$',
-                '',
-                title_text
-            )
-            name = title_text.strip()
+        # ① <title> 全文を取得
+        title_text = soup.title.text.strip() if soup.title else ''
 
-        if not name:
-            name = '【タイトル取得失敗】'
+        # ② 前置句「【…】」をまとめて削除
+        title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
 
+        # ③ 後置句「（価格・間取り）…」以下をまとめて削除
+        title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
+
+        # ④ 余白を詰めて完成
+        name = title_text.strip() or '【タイトル取得失敗】'
         names.append(name)
 
     print(f"✅ 取得件数: {len(names)}")
@@ -81,9 +75,9 @@ def fetch_property_names():
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
-    url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
+    search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}"
     try:
-        res = requests.get(url)
+        res = requests.get(search_url)
         res.raise_for_status()
         items = res.json().get('items', [])
         return items[0]['link'] if items else ''
