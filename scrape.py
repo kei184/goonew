@@ -30,7 +30,7 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得（詳細ページ title タグから） ===
+# === 4. gooから物件名を取得 ===
 def fetch_property_names():
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
@@ -45,51 +45,42 @@ def fetch_property_names():
     time.sleep(5)
 
     elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
-    links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
+    names = []
+    for a in elems:
+        label = a.text.strip()
+        if label and 'goo住宅・不動産' not in label:
+            names.append(label)
+
     driver.quit()
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    names = []
-    for url in links:
-        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-        res = requests.get(full, headers=headers)
-        if res.status_code != 200:
-            print(f"⚠️ スキップ {full} → ステータス {res.status_code}")
-            continue
-
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.title.text.strip() if soup.title else ''
-        name = title
-
-        # 不要部分を削除
-        name = re.sub(r'^【[^】]+】\s*', '', name)  # 例: 【goo住宅・不動産】
-        name = re.sub(r'（価格・間取り）.*$', '', name)  # 例: （価格・間取り）以降を削除
-        name = name.strip() or '【タイトル取得失敗】'
-
-        names.append(name)
-
-    # 重複除去
-    unique_names = sorted(set(names))
-    print(f"✅ 取得済み物件（重複除去）: {len(unique_names)} 件")
-    for n in unique_names:
-        print("・", n)
-
-    return unique_names
+    # 重複を除外
+    unique = list(dict.fromkeys(names))
+    print(f"✅ 取得済み物件（重複除去）: {len(unique)} 件")
+    for name in unique:
+        print("・", name)
+    return unique
 
 # === 5. Google検索で公式URLを取得 ===
 def get_official_url(query):
     search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}&num=1"
-    try:
-        res = requests.get(search_url)
-        res.raise_for_status()
-        items = res.json().get('items', [])
-        return items[0]['link'] if items else ''
-    except Exception as e:
-        print("検索エラー:", e)
-        return ''
+    for attempt in range(3):
+        try:
+            res = requests.get(search_url)
+            if res.status_code == 429:
+                print("⚠️ API制限中。待機して再試行します...")
+                time.sleep(5)
+                continue
+            res.raise_for_status()
+            items = res.json().get('items', [])
+            for item in items:
+                link = item.get('link', '')
+                if any(domain in link for domain in ['.co.jp', '.jp']) and not 'suumo' in link:
+                    return link
+            return items[0]['link'] if items else ''
+        except Exception as e:
+            print("検索エラー:", e)
+            return ''
+    return ''
 
 # === 6. スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
@@ -98,11 +89,21 @@ def write_to_sheet(names, cred_path):
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
+    existing = sheet.col_values(2)[1:]  # 物件名（B列）を取得
     today = datetime.now().strftime('%Y/%m/%d')
+    new_count = 0
+
     for name in names:
+        if name in existing:
+            print(f"⏭️ スキップ（重複）: {name}")
+            continue
+
         url = get_official_url(name)
         sheet.append_row([today, name, url])
+        new_count += 1
         time.sleep(1)
+
+    print(f"✅ 新規追加: {new_count} 件")
 
 # === 7. メイン処理 ===
 def main():
@@ -113,7 +114,6 @@ def main():
             print("❌ 物件が取得できませんでした。")
             return
         write_to_sheet(names, cred)
-        print(f"✅ {len(names)} 件をスプレッドシートに保存しました。")
     except Exception:
         print("❌ 実行時エラー:")
         traceback.print_exc()
