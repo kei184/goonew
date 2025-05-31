@@ -2,7 +2,6 @@ import os
 import time
 import tempfile
 import traceback
-import re
 from collections import OrderedDict
 from datetime import datetime
 
@@ -44,9 +43,9 @@ def get_existing_names(sheet):
 # === 4. Gooの「新着物件」ページから物件名を取得 ===
 def fetch_property_names():
     """
-    Seleniumで「https://house.goo.ne.jp/buy/bm/」を開き、
-    <div class="newObjectList__tit"> のテキストをすべて拾って返す。
-    重複を排除し登場順を保持したリストで返します。
+    Selenium で「https://house.goo.ne.jp/buy/bm/」を開き、
+    各物件の画像の alt 属性から物件名を取得します。
+    重複を排除し、登場順を保持したリストを返します。
     """
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
@@ -62,14 +61,19 @@ def fetch_property_names():
         driver.get("https://house.goo.ne.jp/buy/bm/")
         time.sleep(5)  # 必要に応じて WebDriverWait に置き換えてください
 
-        elements = driver.find_elements(By.CSS_SELECTOR, "div.newObjectList__tit")
-        raw_names = [el.text.strip() for el in elements if el.text.strip()]
+        # li 要素内の img タグの alt 属性を物件名として収集
+        img_elements = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a img")
+        raw_names = []
+        for img in img_elements:
+            alt = img.get_attribute("alt")
+            if alt and alt.strip():
+                raw_names.append(alt.strip())
     finally:
         driver.quit()
 
     # 重複を排除しつつ順序を保持
-    unique = list(OrderedDict.fromkeys(raw_names))
-    return unique
+    unique_names = list(OrderedDict.fromkeys(raw_names))
+    return unique_names
 
 # === 5. Google検索で公式URLを取得（バックオフ対応） ===
 def get_official_url(query, max_retries=3):
@@ -115,8 +119,8 @@ def get_official_url(query, max_retries=3):
 def write_to_sheet(names, cred_path):
     """
     names: [物件名1, 物件名2, ...]
-    既存の物件名と重複しないものだけ Google Sheets に追記します。
-    追記列は [日付, 物件名, 公式URL] の順。
+    既存の物件名と重複しないものだけを Google Sheets に追記します。
+    追記する列は [日付, 物件名, 公式URL] の順。
     """
     # 認証・シートアクセス
     scope = [
