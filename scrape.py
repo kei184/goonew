@@ -2,6 +2,7 @@ import os
 import time
 import tempfile
 import traceback
+import re
 from collections import OrderedDict
 from datetime import datetime
 
@@ -40,12 +41,13 @@ def get_existing_names(sheet):
     except Exception:
         return set()
 
-# === 4. Gooの「新着物件」ページから物件名を取得 ===
+# === 4. Gooの「新着物件」→詳細ページを巡回して物件名を取得 ===
 def fetch_property_names():
     """
-    Selenium で「https://house.goo.ne.jp/buy/bm/」を開き、
-    各物件の画像の alt 属性から物件名を取得します。
-    重複を排除し、登場順を保持したリストを返します。
+    Seleniumで「https://house.goo.ne.jp/buy/bm/」を開き、
+    各詳細リンクを取得。requests + BeautifulSoup で詳細ページを開き、
+    img タグの alt 属性（物件名）を取得します。
+    重複を排除し登場順を保持したリストを返します。
     """
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
@@ -57,19 +59,67 @@ def fetch_property_names():
     service = Service("/usr/bin/chromedriver")
     driver  = webdriver.Chrome(service=service, options=options)
 
+    links = []
     try:
         driver.get("https://house.goo.ne.jp/buy/bm/")
         time.sleep(5)  # 必要に応じて WebDriverWait に置き換えてください
 
-        # li 要素内の img タグの alt 属性を物件名として収集
-        img_elements = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a img")
-        raw_names = []
-        for img in img_elements:
-            alt = img.get_attribute("alt")
-            if alt and alt.strip():
-                raw_names.append(alt.strip())
+        # 「ul.bxslider li a」の href をすべて収集
+        elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
+        for a in elems:
+            href = a.get_attribute("href")
+            if href and "/buy/bm/detail/" in href:
+                full = href if href.startswith("http") else "https://house.goo.ne.jp" + href
+                links.append(full)
     finally:
         driver.quit()
+
+    if not links:
+        return []
+
+    # HTTPヘッダーを用意
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/114.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://house.goo.ne.jp/buy/bm/"
+    }
+
+    raw_names = []
+    for detail_url in links:
+        try:
+            res = requests.get(detail_url, headers=HEADERS)
+            if res.status_code != 200:
+                continue
+            soup = BeautifulSoup(res.text, "html.parser")
+
+            # 詳細ページ内の img タグの alt 属性から物件名を取得
+            # 例: <img class="property-main-image" alt="ザ・パークハウス 新宿富久町" ...>
+            img = soup.select_one("img[property='og:image'], img.property-main-image, img[alt]")
+            name = ""
+            if img and img.has_attr("alt") and img["alt"].strip():
+                name = img["alt"].strip()
+            else:
+                # imgのaltが取れなかった場合、<h1> や <h2> を探す
+                h1 = soup.find("h1")
+                if h1 and h1.text.strip():
+                    name = h1.text.strip()
+                else:
+                    h2 = soup.find("h2")
+                    name = h2.text.strip() if h2 and h2.text.strip() else ""
+
+            # 前置句「【goo住宅・不動産】」が入るケースがあれば削除
+            name = re.sub(r'^【[^】]+】\s*', '', name)
+            # 「（価格・間取り）…」など後半を削除
+            name = re.sub(r'（価格・間取り）.*$', '', name)
+
+            if name:
+                raw_names.append(name)
+
+        except Exception:
+            continue
 
     # 重複を排除しつつ順序を保持
     unique_names = list(OrderedDict.fromkeys(raw_names))
@@ -97,9 +147,7 @@ def get_official_url(query, max_retries=3):
             if res.status_code == 200:
                 data = res.json()
                 items = data.get("items", [])
-                if items:
-                    return items[0].get("link", "")
-                return ""
+                return items[0].get("link", "") if items else ""
             elif res.status_code == 429:
                 print(f"⚠️ 429 Rate Limit for '{query}', retry #{attempt} after {backoff}s")
                 time.sleep(backoff)
@@ -153,8 +201,8 @@ def write_to_sheet(names, cred_path):
 # === 7. メイン処理 ===
 def main():
     try:
-        cred   = create_credentials_file()
-        names  = fetch_property_names()
+        cred  = create_credentials_file()
+        names = fetch_property_names()
 
         if not names:
             print("❌ 物件が取得できませんでした。")
