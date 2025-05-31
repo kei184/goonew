@@ -30,7 +30,7 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得（詳細ページタイトルから） ===
+# === 4. gooのトップから物件リンクを取得し、リンク先タイトルを物件名として使う ===
 def fetch_property_names():
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
@@ -44,27 +44,22 @@ def fetch_property_names():
     driver.get("https://house.goo.ne.jp/buy/bm/")
     time.sleep(5)
 
-    elems = driver.find_elements(By.CSS_SELECTOR, "a[href*='/buy/bm/detail/']")
-    links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
-    driver.quit()
+    elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
+    urls = [a.get_attribute("href") for a in elems if a.get_attribute("href")]
 
     names = []
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for url in links:
-        full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
+    for url in urls:
         try:
-            res = requests.get(full, headers=headers)
-            if res.status_code != 200:
-                print(f"⚠️ スキップ {full} → ステータス {res.status_code}")
-                continue
-            soup = BeautifulSoup(res.text, 'html.parser')
-            title_text = soup.title.text.strip() if soup.title else ''
-            title_text = re.sub(r'【[^】]+】\s*', '', title_text)
-            title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
-            name = title_text.strip() or '【タイトル取得失敗】'
-            names.append(name)
+            driver.get(url)
+            time.sleep(1)
+            title = driver.title
+            name = re.sub(r'^【goo住宅・不動産】|（価格・間取り） 物件情報｜新築マンション・分譲マンション$', '', title).strip()
+            if name and 'goo住宅・不動産' not in name:
+                names.append(name)
         except Exception as e:
-            print(f"⚠️ エラー {full} → {e}")
+            print("❌ タイトル取得失敗:", e)
+
+    driver.quit()
 
     unique = list(dict.fromkeys(names))
     print(f"✅ 取得済み物件（重複除去）: {len(unique)} 件")
@@ -72,21 +67,22 @@ def fetch_property_names():
         print("・", name)
     return unique
 
-# === 5. Google検索で公式URLを取得 ===
+# === 5. Google検索で公式URLを取得（リトライ付き）===
 def get_official_url(query):
     search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}&num=1"
     for attempt in range(3):
         try:
             res = requests.get(search_url)
             if res.status_code == 429:
-                print("⚠️ API制限中。待機して再試行します...")
-                time.sleep(15)
+                wait = 10
+                print(f"⚠️ API制限（429）: {wait}秒待機して再試行... ({attempt + 1}/3)")
+                time.sleep(wait)
                 continue
             res.raise_for_status()
             items = res.json().get('items', [])
             for item in items:
                 link = item.get('link', '')
-                if any(domain in link for domain in ['.co.jp', '.jp']) and not 'suumo' in link:
+                if any(domain in link for domain in ['.co.jp', '.jp']) and 'suumo' not in link:
                     return link
             return items[0]['link'] if items else ''
         except Exception as e:
@@ -94,26 +90,32 @@ def get_official_url(query):
             return ''
     return ''
 
-# === 6. スプレッドシートへ記録 ===
+# === 6. スプレッドシートへ記録（C:マンコミ検索, D:Google検索, E:公式URL）===
 def write_to_sheet(names, cred_path):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    existing_names = sheet.col_values(2)[1:]
+    existing = sheet.col_values(2)[1:]  # B列: 物件名
     today = datetime.now().strftime('%Y/%m/%d')
     new_count = 0
 
     for name in names:
-        if name in existing_names:
+        if name in existing:
             print(f"⏭️ スキップ（重複）: {name}")
             continue
 
-        url = get_official_url(name)
-        sheet.append_row([today, name, url])
-        new_count += 1
-        time.sleep(1)
+        try:
+            manshon_url = f"https://www.e-mansion.co.jp/bbs/search/{requests.utils.quote(name)}"
+            google_url = f"https://www.google.com/search?q={requests.utils.quote(name)}"
+            official_url = get_official_url(name)
+
+            sheet.append_row([today, name, manshon_url, google_url, official_url])
+            new_count += 1
+            time.sleep(2)  # 各物件ごとに待機
+        except Exception as e:
+            print(f"❌ 書き込みエラー: {name} - {e}")
 
     print(f"✅ 新規追加: {new_count} 件")
 
