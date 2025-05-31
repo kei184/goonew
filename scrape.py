@@ -2,7 +2,6 @@ import os
 import time
 import tempfile
 import traceback
-import re
 from datetime import datetime
 
 from selenium import webdriver
@@ -16,21 +15,21 @@ from bs4 import BeautifulSoup
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# === 1. スプレッドシート設定 ===
+# === スプレッドシート設定 ===
 SPREADSHEET_ID = '1LpduIjFPimgUX6g1j5cfLnMT6OayfA5un3it2Z5rwuE'
 SHEET_NAME = '新着物件'
 
-# === 2. Google API設定 ===
+# === Google API設定 ===
 GOOGLE_API_KEY = os.environ['GOOGLE_API_KEY']
 GOOGLE_CSE_ID = os.environ['GOOGLE_CSE_ID']
 
-# === 3. 認証ファイル生成 ===
+# === 認証ファイル生成 ===
 def create_credentials_file():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得 ===
+# === gooから物件名を取得 ===
 def fetch_property_names():
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
@@ -48,41 +47,45 @@ def fetch_property_names():
     names = []
     for a in elems:
         label = a.text.strip()
-        if label and 'goo住宅・不動産' not in label:
+        if label and 'goo住宅・不動産' not in label and '\n' not in label:
             names.append(label)
 
     driver.quit()
-
-    # 重複を除外
     unique = list(dict.fromkeys(names))
     print(f"✅ 取得済み物件（重複除去）: {len(unique)} 件")
     for name in unique:
         print("・", name)
     return unique
 
-# === 5. Google検索で公式URLを取得 ===
-def get_official_url(query):
-    search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}&num=1"
-    for attempt in range(3):
+# === Google検索で公式URLを取得（リトライ付き） ===
+def get_official_url(name):
+    base_url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        'key': GOOGLE_API_KEY,
+        'cx': GOOGLE_CSE_ID,
+        'q': f"{name} 公式サイト",
+        'num': 1
+    }
+    for attempt in range(5):
         try:
-            res = requests.get(search_url)
+            res = requests.get(base_url, params=params)
             if res.status_code == 429:
                 print("⚠️ API制限中。待機して再試行します...")
-                time.sleep(5)
+                time.sleep(60)
                 continue
             res.raise_for_status()
             items = res.json().get('items', [])
             for item in items:
                 link = item.get('link', '')
-                if any(domain in link for domain in ['.co.jp', '.jp']) and not 'suumo' in link:
+                if any(domain in link for domain in ['.co.jp', '.jp']) and 'suumo' not in link:
                     return link
             return items[0]['link'] if items else ''
         except Exception as e:
-            print("検索エラー:", e)
-            return ''
+            print(f"検索エラー ({attempt + 1}/5):", e)
+            time.sleep(60)
     return ''
 
-# === 6. スプレッドシートへ記録 ===
+# === スプレッドシートへ記録 ===
 def write_to_sheet(names, cred_path):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
@@ -90,22 +93,22 @@ def write_to_sheet(names, cred_path):
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
     existing = sheet.col_values(2)[1:]  # 物件名（B列）を取得
+    url_existing = sheet.col_values(3)[1:]  # URL列
     today = datetime.now().strftime('%Y/%m/%d')
     new_count = 0
 
-    for name in names:
+    for i, name in enumerate(names):
         if name in existing:
             print(f"⏭️ スキップ（重複）: {name}")
             continue
-
         url = get_official_url(name)
         sheet.append_row([today, name, url])
         new_count += 1
-        time.sleep(1)
+        time.sleep(15)
 
     print(f"✅ 新規追加: {new_count} 件")
 
-# === 7. メイン処理 ===
+# === メイン処理 ===
 def main():
     try:
         cred = create_credentials_file()
