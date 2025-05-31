@@ -21,34 +21,57 @@ from oauth2client.service_account import ServiceAccountCredentials
 SPREADSHEET_ID = '1LpduIjFPimgUX6g1j5cfLnMT6OayfA5un3it2Z5rwuE'
 SHEET_NAME    = '新着物件'
 
-# === 2. Google API設定 ===
-GOOGLE_API_KEY = os.environ['GOOGLE_API_KEY']
-GOOGLE_CSE_ID  = os.environ['GOOGLE_CSE_ID']
-
-# === 3. 認証ファイル生成 ===
+# === 2. Google認証ファイル生成（Secrets から） ===
 def create_credentials_file():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooから物件名を取得 ===
-def fetch_property_names():
+# === 3. スプレッドシートから既存の物件名リストを取得 ===
+def get_existing_names(sheet):
+    """
+    すでにシートに書き込まれている物件名の集合(Set)を返す。
+    物件名はシート上「B列」に記載されている想定。
+    """
+    try:
+        # B列の全データを取得（1行目が見出しなら2行目以降を使う）
+        col_values = sheet.col_values(2)
+        # 先頭が見出しの場合は除外
+        if col_values and col_values[0] == '物件名':
+            col_values = col_values[1:]
+        return set(col_values)
+    except Exception:
+        return set()
+
+# === 4. gooから (物件名, 詳細URL) を取得 ===
+def fetch_properties():
+    """
+    Goo の「新着物件」ページを Selenium で開き、
+    詳細ページ URL をすべて取得。さらに requests + BeautifulSoup で
+    <title> タグから物件名を抽出し、(name, detail_url) のリストを返す。
+    """
+    # ① Selenium セットアップ（ヘッドレス Chrome）
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
-
     service = Service("/usr/bin/chromedriver")
     driver  = webdriver.Chrome(service=service, options=options)
-    driver.get("https://house.goo.ne.jp/buy/bm/")
-    time.sleep(5)
 
-    elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
-    links = [a.get_attribute('href') for a in elems if '/buy/bm/detail/' in a.get_attribute('href')]
-    driver.quit()
+    try:
+        driver.get("https://house.goo.ne.jp/buy/bm/")
+        time.sleep(5)  # ページロード待機（要素検索に十分な時間を確保）
 
+        # ② 詳細リンクを取得
+        elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
+        raw_links = [a.get_attribute('href') for a in elems if a.get_attribute('href')]
+
+    finally:
+        driver.quit()
+
+    # ③ ヘッダーを設置して詳細ページごとに物件名を取得
     HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -58,59 +81,44 @@ def fetch_property_names():
         "Referer": "https://house.goo.ne.jp/buy/bm/"
     }
 
-    names = []
-    for url in links:
+    props = []
+    for url in raw_links:
+        # URL が相対パスの場合は絶対化
         full = url if url.startswith('http') else 'https://house.goo.ne.jp' + url
-        res  = requests.get(full, headers=HEADERS)
-        if res.status_code != 200:
+        try:
+            res = requests.get(full, headers=HEADERS)
+            if res.status_code != 200:
+                continue
+            soup       = BeautifulSoup(res.text, 'html.parser')
+            title_text = soup.title.text.strip() if soup.title else ''
+
+            # タイトル前の「【…】」を一括で削除
+            title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
+            # 「（価格・間取り）…」以降を一括で削除
+            title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
+
+            name = title_text.strip()
+            if name:
+                props.append((name, full))
+        except Exception:
             continue
-        soup       = BeautifulSoup(res.text, 'html.parser')
-        title_text = soup.title.text.strip() if soup.title else ''
-        title_text = re.sub(r'^【[^】]+】\s*', '', title_text)
-        title_text = re.sub(r'（価格・間取り）.*$', '', title_text)
-        if title_text:
-            names.append(title_text)
 
-    return list(OrderedDict.fromkeys(names))
+    # ④ 重複を除去しつつ順序を保持
+    seen = OrderedDict()
+    for name, url in props:
+        if name not in seen:
+            seen[name] = url
 
-# === 5. Google検索で公式URLを取得 ===
-import time
-import requests
+    return list(seen.items())  # 返り値例: [("ザ・パークハウス 新宿富久町","https://..."), ...]
 
-def get_official_url(query, max_retries=3):
+# === 5. スプレッドシートへ書き込み ===
+def write_to_sheet(props, cred_path):
     """
-    Google CSE API を叩いて公式URLを取得。
-    429 が返ってきたら指数バックオフでリトライ。
+    props = [(name, detail_url), ...]
+    既存の物件名を読み込み、重複しないものだけを追加します。
+    追加する列は [日付, 物件名, 公式URL] の順番。
     """
-    search_endpoint = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "q":   query,
-        "key": GOOGLE_API_KEY,
-        "cx":  GOOGLE_CSE_ID,
-        "num": 1
-    }
-
-    backoff = 1
-    for attempt in range(1, max_retries+1):
-        res = requests.get(search_endpoint, params=params)
-        if res.status_code == 200:
-            items = res.json().get("items", [])
-            return items[0]["link"] if items else ""
-        elif res.status_code == 429:
-            print(f"⚠️ 429 rate limit hit for '{query}', retry #{attempt} after {backoff}s...")
-            time.sleep(backoff)
-            backoff *= 2
-            continue
-        else:
-            print(f"⚠️ CSE error {res.status_code} for '{query}'")
-            break
-
-    # どうしても取れなければ空文字
-    return ""
-
-
-# === 6. スプレッドシートへ記録 ===
-def write_to_sheet(names, cred_path):
+    # ⑴ シートにアクセス
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
@@ -119,27 +127,37 @@ def write_to_sheet(names, cred_path):
     client = gspread.authorize(creds)
     sheet  = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    today = datetime.now().strftime('%Y/%m/%d')
-    for name in names:
-        url = get_official_url(name)
-        sheet.append_row([today, name, url])
-        time.sleep(1)
+    # ⑵ 既存の物件名集合を取得
+    existing_names = get_existing_names(sheet)
 
-# === 7. メイン処理 ===
+    # ⑶ 新規行を1つずつ追加
+    today = datetime.now().strftime('%Y/%m/%d')
+    added = 0
+    for name, url in props:
+        if name in existing_names:
+            continue  # すでに書かれている物件はスキップ
+        sheet.append_row([today, name, url])
+        existing_names.add(name)
+        added += 1
+        time.sleep(1)  # 書き込み→API負荷を抑えるため
+
+    print(f"✅ 新規追加: {added} 件（既存と重複するものはスキップしました）")
+
+# === 6. メイン処理 ===
 def main():
     try:
         cred  = create_credentials_file()
-        names = fetch_property_names()
-        if not names:
+        props = fetch_properties()
+        if not props:
             print("❌ 物件が取得できませんでした。")
             return
 
-        print(f"✅ 取得済み物件（重複除去）: {len(names)} 件")
-        for n in names:
-            print("・", n)
+        print(f"✅ 取得済み物件（重複除去）: {len(props)} 件")
+        for name, url in props:
+            print("・", name, "→", url)
 
-        write_to_sheet(names, cred)
-        print(f"✅ {len(names)} 件をスプレッドシートに保存しました。")
+        write_to_sheet(props, cred)
+        print(f"✅ スプレッドシートへの書き込みが完了しました。")
     except Exception:
         print("❌ 実行時エラー:")
         traceback.print_exc()
