@@ -51,12 +51,23 @@ def fetch_suumo_properties():
             continue
 
         soup = BeautifulSoup(res.text, 'html.parser')
-        new_link = soup.find("a", string=re.compile("今週の.*新着物件"))
-        if not new_link or not new_link.get("href"):
-            print(f"⚠️ 新着物件リンクが見つかりません: {url}")
+        new_link_tag = soup.find("div", class_="feed-title", string=lambda text: text and "今週の" in text)
+        if new_link_tag:
+            parent = new_link_tag.find_parent("div", class_="feed")
+            if parent:
+                link_tag = parent.select_one(".feed-box-link a")
+                if link_tag and link_tag.get("href"):
+                    list_url = base_url + link_tag["href"]
+                else:
+                    print(f"⚠️ 新着物件リンクが見つかりません: {url}")
+                    continue
+            else:
+                print(f"⚠️ feed-box が見つかりません: {url}")
+                continue
+        else:
+            print(f"⚠️ 新着物件タイトルが見つかりません: {url}")
             continue
 
-        list_url = base_url + new_link["href"]
         print(f"🔍 取得中: {list_url}")
         res_list = requests.get(list_url, headers=headers)
         if res_list.status_code != 200:
