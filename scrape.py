@@ -1,20 +1,25 @@
+# scrape.py
 import os
 import time
 import tempfile
 import traceback
 import re
 from datetime import datetime
-from urllib.parse import urljoin
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+# （任意）ページ差異対策で待機したい場合は以下2つを使います
+# from selenium.webdriver.support.ui import WebDriverWait
+# from selenium.webdriver.support import expected_conditions as EC
 
 import requests
 from bs4 import BeautifulSoup
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+
 
 # === 1. スプレッドシート設定 ===
 SPREADSHEET_ID = '1LpduIjFPimgUX6g1j5cfLnMT6OayfA5un3it2Z5rwuE'
@@ -30,62 +35,184 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. 物件詳細情報をスクレイピング ===
-LABEL_PATTERNS = {
-    "address": r"住所\s*([^\n\r]+)",
-    "access":  r"交通\s*([^\n\r]+)",
-    "layout":  r"間取り\s*([^\n\r]+)",
-    "area":    r"専有面積\s*([^\n\r]+)",
+
+# ==============================
+# 追加：詳細抽出のヘルパー
+# ==============================
+
+LABELS = {
+    "address": [r"住所", r"所在地"],
+    "access":  [r"交通"],
+    "layout":  [r"間取り", r"間取"],
+    "area":    [r"専有面積", r"専有面積（壁芯）", r"専有面積（登記）"],
 }
 
-def _extract_by_regex(full_text: str, pattern: str) -> str:
-    m = re.search(pattern, full_text)
-    if m:
-        return m.group(1).strip()
+def _text_without_title(soup: BeautifulSoup) -> str:
+    full = soup.get_text("\n", strip=True)
+    if soup.title and soup.title.string:
+        full = full.replace(soup.title.string.strip(), "")
+    return full
+
+def _first_after_label_text(soup: BeautifulSoup, label_patterns) -> str:
+    """
+    dt/dd → th/td → 全文テキストの順で、ラベル直後の1行ぶんを返す
+    """
+    def _pair(dt_like, dd_like):
+        for lp in label_patterns:
+            tag = soup.find(dt_like, string=re.compile(rf"^\s*{lp}\s*[:：]?\s*$"))
+            if tag:
+                sib = tag.find_next_sibling(dd_like)
+                if sib:
+                    return sib.get_text(" ", strip=True)
+            tag = soup.find(dt_like, string=re.compile(lp))
+            if tag:
+                sib = tag.find_next_sibling(dd_like)
+                if sib:
+                    return sib.get_text(" ", strip=True)
+        return ""
+
+    v = _pair("dt", "dd")
+    if v: return v
+    v = _pair("th", "td")
+    if v: return v
+
+    full = _text_without_title(soup)
+    for lp in label_patterns:
+        m = re.search(rf"{lp}\s*[:：]?\s*([^\n\r]+)", full)
+        if m:
+            cand = m.group(1).strip()
+            if any(bad in cand for bad in ("物件情報", "価格", "新築マンション", "分譲マンション")):
+                continue
+            return cand
     return ""
 
+def _normalize_layout(raw: str) -> str:
+    """
+    全文からでもOK: 1K/1DK/1LDK/1R などを拾って '・' 連結。重複除去・順序維持。
+    """
+    txt = (raw or "").replace("　", " ")
+    hits = re.findall(r"([0-9０-９]+\s*(?:LDK|DK|K|R))", txt, flags=re.I)
+    layouts = []
+    for h in hits:
+        h = h.upper().replace(" ", "")
+        h = h.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        if h not in layouts:
+            layouts.append(h)
+    if not layouts and "ワンルーム" in txt:
+        return "ワンルーム"
+    return "・".join(layouts)
+
+def _normalize_area(raw: str) -> str:
+    """
+    '56.63m2～68.38m2' / '56.63m2' の形に統一。㎡/m²/m^2/m を全部 m2 に。
+    """
+    def _to_m2(s: str) -> str:
+        s = s or ""
+        s = s.replace("㎡", "m2").replace("m^2", "m2")
+        s = re.sub(r"m\s*２", "m2", s)  # m２ → m2
+        s = re.sub(r"\bm\s*$", "m2", s) # 末尾 m → m2
+        s = s.translate(str.maketrans("０１２３４５６７８９．－", "0123456789.-"))
+        s = re.sub(r"^[：:/\-\s]+", "", s)  # 先頭記号
+        s = re.sub(r"\s*超", "", s)        # 「超」など説明語
+        return s
+
+    txt = _to_m2(raw)
+
+    # 1) “～” を含むレンジ
+    m = re.search(r"(\d+(?:\.\d+)?)\s*m2\s*～\s*(\d+(?:\.\d+)?)\s*m2", txt)
+    if m:
+        a, b = m.group(1), m.group(2)
+        return f"{a}m2～{b}m2"
+
+    # 2) 値が2つ以上なら最小～最大
+    nums = re.findall(r"(\d+(?:\.\d+)?)\s*m2", txt)
+    if len(nums) >= 2:
+        vals = sorted((float(n) for n in nums))
+        return f"{vals[0]:g}m2～{vals[-1]:g}m2"
+    if len(nums) == 1:
+        return f"{nums[0]}m2"
+
+    # 3) raw を m2 に寄せて再探索
+    raw2 = (raw or "").replace("㎡", "m2")
+    m2 = re.findall(r"(\d+(?:\.\d+)?)\s*m2", raw2)
+    if len(m2) >= 2:
+        vals = sorted((float(n) for n in m2))
+        return f"{vals[0]:g}m2～{vals[-1]:g}m2"
+    if len(m2) == 1:
+        return f"{m2[0]}m2"
+
+    return ""
+
+
 def fetch_property_details(url, driver):
-    try:
-        driver.get(url)
-        # JSレンダの揺れ対策：軽く待つ
-        time.sleep(2.0)
-        html = driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
+    """
+    画像URL（?700優先）/ 住所 / 交通 / 間取り（2LDK・3LDK）/ 専有面積（56.63m2～68.38m2）
+    を抽出して返す。
+    """
+    driver.get(url)
+    time.sleep(1.2)  # 軽く待機（安定しない場合はWebDriverWaitでラベルを待つ）
 
-        # 1) 画像URLの抽出（<a href="https://img.house.goo.ne.jp/..."> を最優先）
-        image_url = ""
-        a_img = soup.find("a", href=re.compile(r"^https://img\.house\.goo\.ne\.jp/"))
-        if a_img and a_img.has_attr("href"):
-            image_url = a_img["href"]
-        else:
-            # 次善：最初に出てくる img の src が img.house.goo.ne.jp ならそれ
-            img = soup.find("img", src=re.compile(r"^https://img\.house\.goo\.ne\.jp/"))
-            if img and img.has_attr("src"):
-                # 500px版 → 700px版が欲しい場合は置換（なければそのまま）
-                src = img["src"]
-                image_url = re.sub(r"\?500\b", "?700", src)
+    soup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # 2) ページ全文テキストから正規表現で値を抜く
-        #    見出しが <div> や <p> でも問題ないよう全文から拾う
-        full_text = soup.get_text("\n", strip=True)
-        address = _extract_by_regex(full_text, LABEL_PATTERNS["address"])
-        access  = _extract_by_regex(full_text, LABEL_PATTERNS["access"])
-        layout  = _extract_by_regex(full_text, LABEL_PATTERNS["layout"])
-        area    = _extract_by_regex(full_text, LABEL_PATTERNS["area"])
+    # 画像URL：a.image-popup 最優先 → img[src^=https://img.house.goo.ne.jp]
+    image_url = ""
+    a_img = soup.select_one('a.image-popup[href^="https://img.house.goo.ne.jp/"]')
+    if a_img and a_img.has_attr("href"):
+        image_url = a_img["href"]
+    else:
+        img = soup.find("img", src=re.compile(r"^https://img\.house\.goo\.ne\.jp/"))
+        if img and img.has_attr("src"):
+            image_url = re.sub(r"\?500\b", "?700", img["src"])
 
-        return {
-            "image_url": image_url,
-            "address": address,
-            "layout": layout,
-            "area": area,
-            "access": access,
-        }
-    except Exception as e:
-        print("❌ 詳細情報の取得エラー:", e)
-        return {"image_url": "", "address": "", "layout": "", "area": "", "access": ""}
+    # ラベル直後テキストを一度取得
+    raw_address = _first_after_label_text(soup, LABELS["address"])
+    raw_access  = _first_after_label_text(soup, LABELS["access"])
+    raw_layout  = _first_after_label_text(soup, LABELS["layout"])
+    raw_area    = _first_after_label_text(soup, LABELS["area"])
+
+    # 最終整形（フォーマット保証）
+    address = (raw_address or "").strip()
+    access  = (raw_access or "").strip()
+    layout  = _normalize_layout(raw_layout or _text_without_title(soup))
+    area    = _normalize_area(raw_area or _text_without_title(soup))
+
+    # （任意）デバッグ
+    if os.getenv("DEBUG_DETAIL", "").lower() in ("1", "true", "on"):
+        print("[DBG]", url)
+        print("      image_url:", image_url)
+        print("      address  :", address)
+        print("      access   :", access)
+        print("      layout   :", layout)
+        print("      area     :", area)
+
+    return {
+        "image_url": image_url,
+        "address": address,
+        "layout": layout,   # 例: "2LDK・3LDK"
+        "area": area,       # 例: "56.63m2～68.38m2"
+        "access": access,
+    }
 
 
-# === 5. gooのトップから物件リンクを取得し、各種情報をまとめる ===
+# ==============================
+# gooトップ → 物件リンク → タイトル整形
+# ==============================
+
+def _normalize_name_from_title(title: str) -> str:
+    """
+    gooのtitleから余計な尾部を除去。括弧ゴミを削る。
+    例:
+      "【goo住宅・不動産】ザ・パークハウス 東中野プレイス（価格・間取り） 物件情報｜新築マンション・分譲マンション"
+       → "ザ・パークハウス 東中野プレイス"
+    """
+    t = title.strip()
+    t = re.sub(r"^【goo住宅・不動産】", "", t)
+    t = re.sub(r"（価格・間取り）\s*物件情報｜新築マンション・分譲マンション.*$", "", t)
+    t = re.sub(r"\s*物件情報｜新築マンション・分譲マンション.*$", "", t)
+    # 末尾に残りがちな全角括弧/記号を掃除
+    t = re.sub(r"[（）\s]+$", "", t)
+    return t.strip()
+
 def fetch_property_infos():
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
@@ -93,6 +220,8 @@ def fetch_property_infos():
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
+    # UA固定（A/B差異の回避に有効な場合あり）
+    options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36')
 
     service = Service("/usr/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
@@ -109,19 +238,19 @@ def fetch_property_infos():
         try:
             driver.get(url)
             time.sleep(1)
-            title = driver.title
-            name = re.sub(r'^【goo住宅・不動産】|（価格・間取り） 物件情報｜新築マンション・分譲マンション$', '', title).strip()
-            if not name or 'goo住宅・不動産' in name or name in seen_names:
+            title = driver.title or ""
+            name = _normalize_name_from_title(title)
+            if not name or "goo住宅・不動産" in name or name in seen_names:
                 continue
-            seen_names.add(name)
             detail = fetch_property_details(url, driver)
             properties.append({
                 'name': name,
                 'detail_url': url,
                 **detail
             })
+            seen_names.add(name)
         except Exception as e:
-            print("❌ タイトル取得失敗:", e)
+            print("❌ タイトル/詳細取得失敗:", e)
 
     driver.quit()
     print(f"✅ 取得済み物件: {len(properties)} 件")
@@ -129,7 +258,8 @@ def fetch_property_infos():
         print("・", p['name'])
     return properties
 
-# === 6. Google検索で公式URLを取得 ===
+
+# === 6. Google検索で公式URLを取得（リトライ付き）===
 def get_official_url(query):
     search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}&num=1"
     for attempt in range(3):
@@ -152,19 +282,25 @@ def get_official_url(query):
             return ''
     return ''
 
-# === 7. スプレッドシートへ記録 ===
+
+# === 7. スプレッドシートへ記録（B列=物件名で重複チェック）===
 def write_to_sheet(properties, cred_path):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    existing = sheet.col_values(2)[1:]  # B列: 物件名
+    existing = sheet.col_values(2)[1:]  # B列: 物件名（ヘッダ除く）
     today = datetime.now().strftime('%Y/%m/%d')
     new_count = 0
 
     for p in properties:
         name = p['name']
+
+        # デバッグ表示（必要なら環境変数でON）
+        if os.getenv("DEBUG_ROW", "").lower() in ("1", "true", "on"):
+            print("[DBG ROW]", name, p.get('layout',''), p.get('area',''))
+
         if name in existing:
             print(f"⏭️ スキップ（重複）: {name}")
             continue
@@ -175,23 +311,24 @@ def write_to_sheet(properties, cred_path):
             official_url = get_official_url(name)
 
             sheet.append_row([
-                today,
-                name,
-                manshon_url,
-                google_url,
-                official_url,
-                p['image_url'],
-                p['address'],
-                p['layout'],
-                p['area'],
-                p['access'],
+                today,           # A: 取得日付
+                name,            # B: 物件名
+                manshon_url,     # C: マンコミ検索URL
+                google_url,      # D: Google検索URL
+                official_url,    # E: 公式URL
+                p['image_url'],  # F: 画像URL（?700）
+                p['address'],    # G: 住所
+                p['layout'],     # H: 間取り（例: 2LDK・3LDK）
+                p['area'],       # I: 専有面積（例: 56.63m2～68.38m2）
+                p['access'],     # J: 交通
             ])
             new_count += 1
-            time.sleep(2)
+            time.sleep(2)  # 各物件ごとに待機（シート書込レート制限対策）
         except Exception as e:
             print(f"❌ 書き込みエラー: {name} - {e}")
 
     print(f"✅ 新規追加: {new_count} 件")
+
 
 # === 8. メイン処理 ===
 def main():
@@ -205,6 +342,7 @@ def main():
     except Exception:
         print("❌ 実行時エラー:")
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
