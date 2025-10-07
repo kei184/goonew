@@ -85,34 +85,59 @@ def _normalize_layout_from_td(raw: str) -> str:
 
 def _normalize_area_from_td(raw: str) -> str:
     """
-    専有面積を '44.83m2～74.57m2' 形式に統一。
-    ㎡/m²/m^2/m を m2 に寄せ、明示レンジを優先。無ければ複数値から最小～最大。
+    専有面積を '44.83㎡～74.57㎡' 形式に統一。
+    ㎡/m²/m^2/m２/m 2/m をすべて吸収し、結果は必ず「㎡」で出力。
     """
-    def to_m2(s):
+    import re
+
+    def cleanup(s: str) -> str:
         s = s or ""
-        s = s.replace("㎡", "m2").replace("m^2", "m2")
-        s = re.sub(r"m\s*２", "m2", s)   # m２ → m2
-        s = re.sub(r"\bm\s*$", "m2", s) # 末尾 m → m2
-        s = s.translate(str.maketrans("０１２３４５６７８９．－", "0123456789.-"))
+        # NBSP/ゼロ幅など
+        s = s.replace("\u00A0", " ").replace("\u200B", "")
+        # 単位ゆれ → 中間表現 m2 に寄せてから抽出
+        s = s.replace("㎡", "m2")
+        s = s.replace("m²", "m2")          # Unicodeの²
+        s = s.replace("m^2", "m2")
+        s = re.sub(r"m\s*２", "m2", s)     # 全角 ２
+        s = re.sub(r"m\s*2\b", "m2", s)    # m 2 / m\t2 / m\n2
+        s = re.sub(r"\bm\s*$", "m2", s)    # 末尾が m のみ
+        # 全角数字 → 半角、カンマ除去
+        s = s.translate(str.maketrans("０１２３４５６７８９．，－", "0123456789.,-")).replace(",", "")
+        # 先頭の記号/不要語/注釈は除去
+        s = re.sub(r"^[：:/\-\s]+", "", s)
         s = re.sub(r"\s*(超|平均|前後|程度)", "", s)
-        return s
+        s = re.sub(r"[（(].*?[)）]", "", s)  # 括弧注釈を削除
+        return s.strip()
 
-    txt = to_m2(raw)
+    def fmt(num_str: str) -> str:
+        # "44.830" → "44.83"、"70.0" → "70"
+        try:
+            v = float(num_str)
+            out = f"{v:.2f}" if "." in num_str else f"{v:g}"
+            # 末尾ゼロと小数点の整理
+            out = out.rstrip("0").rstrip(".")
+            return f"{out}㎡"
+        except Exception:
+            return f"{num_str}㎡"
 
-    # 明示レンジ
-    m = re.search(r"(\d+(?:\.\d+)?)\s*m2\s*～\s*(\d+(?:\.\d+)?)\s*m2", txt)
+    txt = cleanup(raw)
+    wave = r"(?:～|~)"
+
+    # 1) 明示レンジ（～/~ どちらでも）
+    m = re.search(rf"(\d+(?:\.\d+)?)\s*m2\s*{wave}\s*(\d+(?:\.\d+)?)\s*m2", txt)
     if m:
-        return f"{m.group(1)}m2～{m.group(2)}m2"
+        a, b = m.group(1), m.group(2)
+        return f"{fmt(a)}～{fmt(b)}"
 
-    # すべての m2 数値から最小～最大
+    # 2) m2 の値を全部拾い、2つ以上なら最小～最大
     nums = re.findall(r"(\d+(?:\.\d+)?)\s*m2", txt)
     if len(nums) >= 2:
         vals = sorted(float(n) for n in nums)
-        return f"{vals[0]:g}m2～{vals[-1]:g}m2"
+        return f"{fmt(str(vals[0]))}～{fmt(str(vals[-1]))}"
     if len(nums) == 1:
-        return f"{nums[0]}m2"
-    return ""
+        return fmt(nums[0])
 
+    return ""
 
 def fetch_property_details(url, driver):
     """
