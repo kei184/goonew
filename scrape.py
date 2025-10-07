@@ -38,28 +38,37 @@ def fetch_property_details(url, driver):
         html = driver.page_source
         soup = BeautifulSoup(html, 'html.parser')
 
-        def get_text_after_th(label):
-            th = soup.find('th', string=re.compile(label))
-            if th and th.find_next_sibling('td'):
-                return th.find_next_sibling('td').text.strip()
+        def extract_text(label):
+            tag = soup.find(['th', 'dt'], string=re.compile(label))
+            if tag:
+                next_tag = tag.find_next_sibling(['td', 'dd'])
+                if next_tag:
+                    return next_tag.get_text(strip=True)
             return ''
 
-        # 画像URL（代表画像）
-        img_tag = soup.select_one('.gallery img') or soup.find('img')
-        image_url = img_tag['src'] if img_tag else ''
-        if image_url and image_url.startswith('/'):
-            image_url = 'https://house.goo.ne.jp' + image_url
+        # 画像URL：最初の「image-popup」クラスの <a href=...> を取得
+        image_anchor = soup.select_one('a.image-popup')
+        image_url = ''
+        if image_anchor and image_anchor.has_attr('href'):
+            image_url = image_anchor['href']
 
         return {
             'image_url': image_url,
-            'address': get_text_after_th('所在地'),
-            'layout': get_text_after_th('間取り'),
-            'area': get_text_after_th('専有面積'),
-            'access': get_text_after_th('交通'),
+            'address': extract_text('住所'),
+            'layout': extract_text('間取り'),
+            'area': extract_text('専有面積'),
+            'access': extract_text('交通')
         }
+
     except Exception as e:
-        print("❌ 詳細取得失敗:", e)
-        return {'image_url': '', 'address': '', 'layout': '', 'area': '', 'access': ''}
+        print("❌ 詳細情報の取得エラー:", e)
+        return {
+            'image_url': '',
+            'address': '',
+            'layout': '',
+            'area': '',
+            'access': ''
+        }
 
 # === 5. gooのトップから物件リンクを取得し、各種情報をまとめる ===
 def fetch_property_infos():
