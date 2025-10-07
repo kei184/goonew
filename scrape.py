@@ -30,8 +30,39 @@ def create_credentials_file():
         tmp.write(os.environ['GOOGLE_CREDENTIALS_JSON'].encode())
         return tmp.name
 
-# === 4. gooのトップから物件リンクを取得し、リンク先タイトルを物件名として使う ===
-def fetch_property_names():
+# === 4. 物件詳細情報をスクレイピング ===
+def fetch_property_details(url, driver):
+    try:
+        driver.get(url)
+        time.sleep(2)
+        html = driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+
+        def get_text_after_th(label):
+            th = soup.find('th', string=re.compile(label))
+            if th and th.find_next_sibling('td'):
+                return th.find_next_sibling('td').text.strip()
+            return ''
+
+        # 画像URL（代表画像）
+        img_tag = soup.select_one('.gallery img') or soup.find('img')
+        image_url = img_tag['src'] if img_tag else ''
+        if image_url and image_url.startswith('/'):
+            image_url = 'https://house.goo.ne.jp' + image_url
+
+        return {
+            'image_url': image_url,
+            'address': get_text_after_th('所在地'),
+            'layout': get_text_after_th('間取り'),
+            'area': get_text_after_th('専有面積'),
+            'access': get_text_after_th('交通'),
+        }
+    except Exception as e:
+        print("❌ 詳細取得失敗:", e)
+        return {'image_url': '', 'address': '', 'layout': '', 'area': '', 'access': ''}
+
+# === 5. gooのトップから物件リンクを取得し、各種情報をまとめる ===
+def fetch_property_infos():
     options = Options()
     options.binary_location = "/usr/bin/google-chrome"
     options.add_argument('--headless=new')
@@ -47,27 +78,34 @@ def fetch_property_names():
     elems = driver.find_elements(By.CSS_SELECTOR, "ul.bxslider li a")
     urls = [a.get_attribute("href") for a in elems if a.get_attribute("href")]
 
-    names = []
+    properties = []
+    seen_names = set()
+
     for url in urls:
         try:
             driver.get(url)
             time.sleep(1)
             title = driver.title
             name = re.sub(r'^【goo住宅・不動産】|（価格・間取り） 物件情報｜新築マンション・分譲マンション$', '', title).strip()
-            if name and 'goo住宅・不動産' not in name:
-                names.append(name)
+            if not name or 'goo住宅・不動産' in name or name in seen_names:
+                continue
+            seen_names.add(name)
+            detail = fetch_property_details(url, driver)
+            properties.append({
+                'name': name,
+                'detail_url': url,
+                **detail
+            })
         except Exception as e:
             print("❌ タイトル取得失敗:", e)
 
     driver.quit()
+    print(f"✅ 取得済み物件: {len(properties)} 件")
+    for p in properties:
+        print("・", p['name'])
+    return properties
 
-    unique = list(dict.fromkeys(names))
-    print(f"✅ 取得済み物件（重複除去）: {len(unique)} 件")
-    for name in unique:
-        print("・", name)
-    return unique
-
-# === 5. Google検索で公式URLを取得（リトライ付き）===
+# === 6. Google検索で公式URLを取得 ===
 def get_official_url(query):
     search_url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}&num=1"
     for attempt in range(3):
@@ -90,8 +128,8 @@ def get_official_url(query):
             return ''
     return ''
 
-# === 6. スプレッドシートへ記録（C:マンコミ検索, D:Google検索, E:公式URL）===
-def write_to_sheet(names, cred_path):
+# === 7. スプレッドシートへ記録 ===
+def write_to_sheet(properties, cred_path):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
     client = gspread.authorize(creds)
@@ -101,7 +139,8 @@ def write_to_sheet(names, cred_path):
     today = datetime.now().strftime('%Y/%m/%d')
     new_count = 0
 
-    for name in names:
+    for p in properties:
+        name = p['name']
         if name in existing:
             print(f"⏭️ スキップ（重複）: {name}")
             continue
@@ -111,23 +150,34 @@ def write_to_sheet(names, cred_path):
             google_url = f"https://www.google.com/search?q={requests.utils.quote(name)}"
             official_url = get_official_url(name)
 
-            sheet.append_row([today, name, manshon_url, google_url, official_url])
+            sheet.append_row([
+                today,
+                name,
+                manshon_url,
+                google_url,
+                official_url,
+                p['image_url'],
+                p['address'],
+                p['layout'],
+                p['area'],
+                p['access'],
+            ])
             new_count += 1
-            time.sleep(2)  # 各物件ごとに待機
+            time.sleep(2)
         except Exception as e:
             print(f"❌ 書き込みエラー: {name} - {e}")
 
     print(f"✅ 新規追加: {new_count} 件")
 
-# === 7. メイン処理 ===
+# === 8. メイン処理 ===
 def main():
     try:
         cred = create_credentials_file()
-        names = fetch_property_names()
-        if not names:
+        properties = fetch_property_infos()
+        if not properties:
             print("❌ 物件が取得できませんでした。")
             return
-        write_to_sheet(names, cred)
+        write_to_sheet(properties, cred)
     except Exception:
         print("❌ 実行時エラー:")
         traceback.print_exc()
