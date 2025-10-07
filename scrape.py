@@ -34,7 +34,7 @@ def create_credentials_file():
 
 
 # ==============================
-# 追加：詳細抽出のヘルパー（<td>を丸ごと→不要除去→整形）
+# 追加：詳細抽出ヘルパー（<td>を丸ごと→不要除去→整形）
 # ==============================
 
 def _sanitize_cell(x: str) -> str:
@@ -42,15 +42,16 @@ def _sanitize_cell(x: str) -> str:
     if x is None:
         return ""
     s = re.sub(r"[\t\r\n]+", " ", str(x))
+    s = s.replace("\u00A0", " ").replace("\u200B", "")  # NBSP / ゼロ幅
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
 
 def _clean_td_text(td):
     """<td> 内の不要要素（リンク等）を削除してテキスト化。"""
-    # 不要なリンク・装飾を削除
     for e in td.select('span.link-s, .link-s, a'):
         e.decompose()
     text = td.get_text(" ", strip=True)
+    text = text.replace("\u00A0", " ").replace("\u200B", "")
     text = re.sub(r"\s{2,}", " ", text)
     return text
 
@@ -83,65 +84,61 @@ def _normalize_layout_from_td(raw: str) -> str:
         return "ワンルーム"
     return "・".join(out)
 
+def _normalize_area_to_tsubo_m2_display(a: float) -> str:
+    """数値文字列→'xx.xx' or 'xx' に整形した上で '㎡' を付ける。"""
+    if a is None:
+        return ""
+    # 小数は最大2桁、末尾の0は落とす
+    s = f"{a:.2f}"
+    s = s.rstrip("0").rstrip(".")
+    return f"{s}㎡"
+
 def _normalize_area_from_td(raw: str) -> str:
     """
     専有面積を '44.83㎡～74.57㎡' 形式に統一。
-    ㎡/m²/m^2/m２/m 2/m をすべて吸収し、結果は必ず「㎡」で出力。
+    ㎡/m²/m^2/m２/m 2/m を中間表現 m2 に寄せてから抽出し、最終は必ず「㎡」で出力。
     """
-    import re
-
-    def cleanup(s: str) -> str:
+    def cleanup_to_m2(s: str) -> str:
         s = s or ""
-        # NBSP/ゼロ幅など
         s = s.replace("\u00A0", " ").replace("\u200B", "")
-        # 単位ゆれ → 中間表現 m2 に寄せてから抽出
+        # 単位ゆれ → m2 へ寄せる
         s = s.replace("㎡", "m2")
-        s = s.replace("m²", "m2")          # Unicodeの²
+        s = s.replace("m²", "m2")
         s = s.replace("m^2", "m2")
-        s = re.sub(r"m\s*２", "m2", s)     # 全角 ２
+        s = re.sub(r"m\s*２", "m2", s)     # m２ → m2
         s = re.sub(r"m\s*2\b", "m2", s)    # m 2 / m\t2 / m\n2
-        s = re.sub(r"\bm\s*$", "m2", s)    # 末尾が m のみ
-        # 全角数字 → 半角、カンマ除去
+        s = re.sub(r"\bm\s*$", "m2", s)    # 末尾 m → m2
+        # 全角数字→半角、区切り除去
         s = s.translate(str.maketrans("０１２３４５６７８９．，－", "0123456789.,-")).replace(",", "")
-        # 先頭の記号/不要語/注釈は除去
+        # 余計な先頭記号・注釈・説明語
         s = re.sub(r"^[：:/\-\s]+", "", s)
         s = re.sub(r"\s*(超|平均|前後|程度)", "", s)
-        s = re.sub(r"[（(].*?[)）]", "", s)  # 括弧注釈を削除
+        s = re.sub(r"[（(].*?[)）]", "", s)
         return s.strip()
 
-    def fmt(num_str: str) -> str:
-        # "44.830" → "44.83"、"70.0" → "70"
-        try:
-            v = float(num_str)
-            out = f"{v:.2f}" if "." in num_str else f"{v:g}"
-            # 末尾ゼロと小数点の整理
-            out = out.rstrip("0").rstrip(".")
-            return f"{out}㎡"
-        except Exception:
-            return f"{num_str}㎡"
-
-    txt = cleanup(raw)
+    txt = cleanup_to_m2(raw)
     wave = r"(?:～|~)"
 
-    # 1) 明示レンジ（～/~ どちらでも）
+    # 明示レンジ
     m = re.search(rf"(\d+(?:\.\d+)?)\s*m2\s*{wave}\s*(\d+(?:\.\d+)?)\s*m2", txt)
     if m:
-        a, b = m.group(1), m.group(2)
-        return f"{fmt(a)}～{fmt(b)}"
+        a, b = float(m.group(1)), float(m.group(2))
+        return f"{_normalize_area_to_tsubo_m2_display(a)}～{_normalize_area_to_tsubo_m2_display(b)}"
 
-    # 2) m2 の値を全部拾い、2つ以上なら最小～最大
-    nums = re.findall(r"(\d+(?:\.\d+)?)\s*m2", txt)
+    # m2の出現を全部拾って最小～最大
+    nums = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)\s*m2", txt)]
     if len(nums) >= 2:
-        vals = sorted(float(n) for n in nums)
-        return f"{fmt(str(vals[0]))}～{fmt(str(vals[-1]))}"
+        nums.sort()
+        return f"{_normalize_area_to_tsubo_m2_display(nums[0])}～{_normalize_area_to_tsubo_m2_display(nums[-1])}"
     if len(nums) == 1:
-        return fmt(nums[0])
+        return _normalize_area_to_tsubo_m2_display(nums[0])
 
     return ""
 
+
 def fetch_property_details(url, driver):
     """
-    画像URL（?700優先）/ 住所 / 交通 / 間取り（2LDK・3LDK）/ 専有面積（44.83m2～74.57m2形式）
+    画像URL（?700優先）/ 住所 / 交通 / 間取り（2LDK・3LDK）/ 専有面積（xx.xx㎡～yy.yy㎡）
     を抽出して返す。<th>の次の<td>を丸ごと→不要削除→整形。
     """
     driver.get(url)
@@ -159,7 +156,7 @@ def fetch_property_details(url, driver):
         if img and img.has_attr("src"):
             image_url = re.sub(r"\?500\b", "?700", img["src"])
 
-    # --- ラベル直の <td> を“丸ごと”取得してから整形 ---
+    # ラベル直の <td> を“丸ごと”取得してから整形
     address_raw = _get_td_by_label(soup, r"(住所|所在地)")
     access_raw  = _get_td_by_label(soup, r"交通")
     layout_raw  = _get_td_by_label(soup, r"(間取り|間取)")
@@ -169,10 +166,10 @@ def fetch_property_details(url, driver):
     area   = _normalize_area_from_td(area_raw)
 
     return {
-        "image_url": image_url,
+        "image_url": _sanitize_cell(image_url),
         "address": _sanitize_cell(address_raw),
         "layout": _sanitize_cell(layout),   # 例: 2LDK・3LDK
-        "area":   _sanitize_cell(area),     # 例: 44.83m2～74.57m2
+        "area":   _sanitize_cell(area),     # 例: 44.83㎡～74.57㎡
         "access": _sanitize_cell(access_raw),
     }
 
@@ -184,9 +181,6 @@ def fetch_property_details(url, driver):
 def _normalize_name_from_title(title: str) -> str:
     """
     gooのtitleから余計な尾部を除去。
-    例:
-      "【goo住宅・不動産】ザ・パークハウス 東中野プレイス（価格・間取り） 物件情報｜新築マンション・分譲マンション"
-       → "ザ・パークハウス 東中野プレイス"
     """
     t = (title or "").strip()
     t = re.sub(r"^【goo住宅・不動産】", "", t)
@@ -202,7 +196,6 @@ def fetch_property_infos():
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
-    # UA固定（A/B差異の回避に有効な場合あり）
     options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36')
 
     service = Service("/usr/bin/chromedriver")
@@ -266,6 +259,11 @@ def get_official_url(query):
 
 
 # === 7. スプレッドシートへ記載（A列から固定10列, RAW, 改行/タブ除去）===
+def _next_empty_row_in_col_a(sheet):
+    """A列の次の空行番号（1始まり）を返す。A列が常に埋まる前提でシンプル・高速。"""
+    col_a = sheet.col_values(1)  # A列
+    return len(col_a) + 1  # 次の空行
+
 def write_to_sheet(properties, cred_path):
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name(cred_path, scope)
@@ -276,12 +274,9 @@ def write_to_sheet(properties, cred_path):
     today = datetime.now().strftime('%Y/%m/%d')
     new_count = 0
 
-    rows_to_append = []  # まとめて追加（ズレ防止 & 高速）
-
     for p in properties:
         name = p['name']
 
-        # デバッグ（必要時のみ）
         if os.getenv("DEBUG_ROW", "").lower() in ("1", "true", "on"):
             print("[DBG ROW]", name, p.get('layout',''), p.get('area',''))
 
@@ -302,17 +297,18 @@ def write_to_sheet(properties, cred_path):
             _sanitize_cell(p.get('image_url','')),   # F: 画像URL
             _sanitize_cell(p.get('address','')),     # G: 住所
             _sanitize_cell(p.get('layout','')),      # H: 間取り（例: 2LDK・3LDK）
-            _sanitize_cell(p.get('area','')),        # I: 専有面積（例: 44.83m2～74.57m2）
+            _sanitize_cell(p.get('area','')),        # I: 専有面積（例: 44.83㎡～74.57㎡）
             _sanitize_cell(p.get('access','')),      # J: 交通
         ]
         # 必ず10列（A～J）に揃える
         row += [""] * (10 - len(row))
-        rows_to_append.append(row)
-        new_count += 1
 
-    if rows_to_append:
-        # A列から順に RAW で追記（自動解釈を抑止、列ズレ防止）
-        sheet.append_rows(rows_to_append, value_input_option='RAW', table_range="A1:J1")
+        # ★ ここがポイント：A列の次の空行を計算して、明示的に A{r}:J{r} に書き込む
+        r = _next_empty_row_in_col_a(sheet)
+        sheet.update(f"A{r}:J{r}", [row], value_input_option='RAW')
+
+        new_count += 1
+        time.sleep(0.5)  # レート制御（必要に応じて調整）
 
     print(f"✅ 新規追加: {new_count} 件")
 
