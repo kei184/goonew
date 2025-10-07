@@ -4,7 +4,7 @@ import tempfile
 import traceback
 import re
 from datetime import datetime
-
+from urllib.parse import urljoin
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -31,44 +31,59 @@ def create_credentials_file():
         return tmp.name
 
 # === 4. 物件詳細情報をスクレイピング ===
+LABEL_PATTERNS = {
+    "address": r"住所\s*([^\n\r]+)",
+    "access":  r"交通\s*([^\n\r]+)",
+    "layout":  r"間取り\s*([^\n\r]+)",
+    "area":    r"専有面積\s*([^\n\r]+)",
+}
+
+def _extract_by_regex(full_text: str, pattern: str) -> str:
+    m = re.search(pattern, full_text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
 def fetch_property_details(url, driver):
     try:
         driver.get(url)
-        time.sleep(2)
+        # JSレンダの揺れ対策：軽く待つ
+        time.sleep(2.0)
         html = driver.page_source
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
 
-        def extract_text(label):
-            tag = soup.find(['th', 'dt'], string=re.compile(label))
-            if tag:
-                next_tag = tag.find_next_sibling(['td', 'dd'])
-                if next_tag:
-                    return next_tag.get_text(strip=True)
-            return ''
+        # 1) 画像URLの抽出（<a href="https://img.house.goo.ne.jp/..."> を最優先）
+        image_url = ""
+        a_img = soup.find("a", href=re.compile(r"^https://img\.house\.goo\.ne\.jp/"))
+        if a_img and a_img.has_attr("href"):
+            image_url = a_img["href"]
+        else:
+            # 次善：最初に出てくる img の src が img.house.goo.ne.jp ならそれ
+            img = soup.find("img", src=re.compile(r"^https://img\.house\.goo\.ne\.jp/"))
+            if img and img.has_attr("src"):
+                # 500px版 → 700px版が欲しい場合は置換（なければそのまま）
+                src = img["src"]
+                image_url = re.sub(r"\?500\b", "?700", src)
 
-        # 画像URL：最初の「image-popup」クラスの <a href=...> を取得
-        image_anchor = soup.select_one('a.image-popup')
-        image_url = ''
-        if image_anchor and image_anchor.has_attr('href'):
-            image_url = image_anchor['href']
+        # 2) ページ全文テキストから正規表現で値を抜く
+        #    見出しが <div> や <p> でも問題ないよう全文から拾う
+        full_text = soup.get_text("\n", strip=True)
+        address = _extract_by_regex(full_text, LABEL_PATTERNS["address"])
+        access  = _extract_by_regex(full_text, LABEL_PATTERNS["access"])
+        layout  = _extract_by_regex(full_text, LABEL_PATTERNS["layout"])
+        area    = _extract_by_regex(full_text, LABEL_PATTERNS["area"])
 
         return {
-            'image_url': image_url,
-            'address': extract_text('住所'),
-            'layout': extract_text('間取り'),
-            'area': extract_text('専有面積'),
-            'access': extract_text('交通')
+            "image_url": image_url,
+            "address": address,
+            "layout": layout,
+            "area": area,
+            "access": access,
         }
-
     except Exception as e:
         print("❌ 詳細情報の取得エラー:", e)
-        return {
-            'image_url': '',
-            'address': '',
-            'layout': '',
-            'area': '',
-            'access': ''
-        }
+        return {"image_url": "", "address": "", "layout": "", "area": "", "access": ""}
+
 
 # === 5. gooのトップから物件リンクを取得し、各種情報をまとめる ===
 def fetch_property_infos():
