@@ -10,9 +10,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-# 必要に応じて待機を厳密化する場合は以下を使用
-# from selenium.webdriver.support.ui import WebDriverWait
-# from selenium.webdriver.support import expected_conditions as EC
 
 import requests
 from bs4 import BeautifulSoup
@@ -37,127 +34,8 @@ def create_credentials_file():
 
 
 # ==============================
-# 追加：詳細抽出のヘルパー
+# 追加：詳細抽出のヘルパー（<td>を丸ごと→不要除去→整形）
 # ==============================
-
-LABELS = {
-    "address": [r"住所", r"所在地"],
-    "access":  [r"交通"],
-    "layout":  [r"間取り", r"間取"],
-    "area":    [r"専有面積", r"専有面積（壁芯）", r"専有面積（登記）"],
-}
-
-def _text_without_title(soup: BeautifulSoup) -> str:
-    full = soup.get_text("\n", strip=True)
-    if soup.title and soup.title.string:
-        full = full.replace(soup.title.string.strip(), "")
-    return full
-
-def _first_after_label_text(soup: BeautifulSoup, label_patterns) -> str:
-    """
-    dt/dd → th/td → 全文テキストの順で、ラベル直後の1行ぶんを返す
-    """
-    def _pair(dt_like, dd_like):
-        for lp in label_patterns:
-            tag = soup.find(dt_like, string=re.compile(rf"^\s*{lp}\s*[:：]?\s*$"))
-            if tag:
-                sib = tag.find_next_sibling(dd_like)
-                if sib:
-                    return sib.get_text(" ", strip=True)
-            tag = soup.find(dt_like, string=re.compile(lp))
-            if tag:
-                sib = tag.find_next_sibling(dd_like)
-                if sib:
-                    return sib.get_text(" ", strip=True)
-        return ""
-
-    v = _pair("dt", "dd")
-    if v: return v
-    v = _pair("th", "td")
-    if v: return v
-
-    full = _text_without_title(soup)
-    for lp in label_patterns:
-        m = re.search(rf"{lp}\s*[:：]?\s*([^\n\r]+)", full)
-        if m:
-            cand = m.group(1).strip()
-            if any(bad in cand for bad in ("物件情報", "価格", "新築マンション", "分譲マンション")):
-                continue
-            return cand
-    return ""
-
-def _normalize_layout(raw: str) -> str:
-    """
-    レイアウトを '2LDK・3LDK' のように統一。
-    - 数字は半角化
-    - 種類順: R < K < DK < LDK
-    - 重複除去して '・' 連結
-    """
-    txt = (raw or "").replace("　", " ")
-    hits = re.findall(r"([0-9０-９]+)\s*(LDK|DK|K|R)", txt, flags=re.I)
-    items = []
-    for num, typ in hits:
-        num = num.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-        typ = typ.upper()
-        # 数値が先に来るよう保持
-        items.append((int(num), typ))
-
-    if not items and "ワンルーム" in txt:
-        return "ワンルーム"
-
-    order = {"R":0, "K":1, "DK":2, "LDK":3}
-    items = sorted(items, key=lambda x: (x[0], order.get(x[1], 99)))
-
-    seen = set()
-    out = []
-    for n, t in items:
-        key = f"{n}{t}"
-        if key not in seen:
-            seen.add(key)
-            out.append(f"{n}{t}")
-    return "・".join(out)
-
-def _normalize_area(raw: str) -> str:
-    """
-    専有面積を '56.63m2～68.38m2' 形式に統一。
-    - ㎡/m²/m^2/m を m2 に寄せる
-    - “～” を含むレンジ優先、無ければ複数値から最小～最大
-    - 単一値なら 'XX.XXm2'
-    """
-    def _to_m2(s: str) -> str:
-        s = s or ""
-        s = s.replace("㎡", "m2").replace("m^2", "m2")
-        s = re.sub(r"m\s*２", "m2", s)  # m２ → m2
-        s = re.sub(r"\bm\s*$", "m2", s) # 末尾 m → m2
-        s = s.translate(str.maketrans("０１２３４５６７８９．－", "0123456789.-"))
-        s = re.sub(r"^[：:/\-\s]+", "", s)  # 先頭記号
-        s = re.sub(r"\s*(超|平均|前後|程度)", "", s)
-        return s
-
-    txt = _to_m2(raw)
-
-    m = re.search(r"(\d+(?:\.\d+)?)\s*m2\s*～\s*(\d+(?:\.\d+)?)\s*m2", txt)
-    if m:
-        a, b = m.group(1), m.group(2)
-        return f"{a}m2～{b}m2"
-
-    nums = re.findall(r"(\d+(?:\.\d+)?)\s*m2", txt)
-    if len(nums) >= 2:
-        vals = sorted(float(n) for n in nums)
-        return f"{vals[0]:g}m2～{vals[-1]:g}m2"
-    if len(nums) == 1:
-        return f"{nums[0]}m2"
-
-    # raw側をもう一度寄せて保険
-    raw2 = (raw or "").replace("㎡", "m2")
-    m2 = re.findall(r"(\d+(?:\.\d+)?)\s*m2", raw2)
-    if len(m2) >= 2:
-        vals = sorted(float(n) for n in m2)
-        return f"{vals[0]:g}m2～{vals[-1]:g}m2"
-    if len(m2) == 1:
-        return f"{m2[0]}m2"
-
-    return ""
 
 def _sanitize_cell(x: str) -> str:
     """セル内のタブ/改行/連続空白を除去して安定化。"""
@@ -167,18 +45,86 @@ def _sanitize_cell(x: str) -> str:
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
 
+def _clean_td_text(td):
+    """<td> 内の不要要素（リンク等）を削除してテキスト化。"""
+    # 不要なリンク・装飾を削除
+    for e in td.select('span.link-s, .link-s, a'):
+        e.decompose()
+    text = td.get_text(" ", strip=True)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text
+
+def _get_td_by_label(soup, th_label_regex: str) -> str:
+    """与えたラベル(th)に対応する次の<td>をテキストで返す。見つからなければ空。"""
+    th = soup.find('th', string=re.compile(rf"^\s*{th_label_regex}\s*$"))
+    if not th:
+        return ""
+    td = th.find_next_sibling('td')
+    if not td:
+        return ""
+    return _clean_td_text(td)
+
+def _normalize_layout_from_td(raw: str) -> str:
+    """
+    間取りを '2LDK・3LDK' のように統一（順序維持＆重複除去）。
+    1K/1DK/1LDK/1R/… を抽出し、半角化して '・' 連結。
+    """
+    txt = (raw or "").replace("　", " ")
+    hits = re.findall(r"([0-9０-９]+)\s*(LDK|DK|K|R)", txt, flags=re.I)
+    out, seen = [], set()
+    for num, typ in hits:
+        num = num.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        typ = typ.upper()
+        key = f"{num}{typ}"
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    if not out and "ワンルーム" in txt:
+        return "ワンルーム"
+    return "・".join(out)
+
+def _normalize_area_from_td(raw: str) -> str:
+    """
+    専有面積を '44.83m2～74.57m2' 形式に統一。
+    ㎡/m²/m^2/m を m2 に寄せ、明示レンジを優先。無ければ複数値から最小～最大。
+    """
+    def to_m2(s):
+        s = s or ""
+        s = s.replace("㎡", "m2").replace("m^2", "m2")
+        s = re.sub(r"m\s*２", "m2", s)   # m２ → m2
+        s = re.sub(r"\bm\s*$", "m2", s) # 末尾 m → m2
+        s = s.translate(str.maketrans("０１２３４５６７８９．－", "0123456789.-"))
+        s = re.sub(r"\s*(超|平均|前後|程度)", "", s)
+        return s
+
+    txt = to_m2(raw)
+
+    # 明示レンジ
+    m = re.search(r"(\d+(?:\.\d+)?)\s*m2\s*～\s*(\d+(?:\.\d+)?)\s*m2", txt)
+    if m:
+        return f"{m.group(1)}m2～{m.group(2)}m2"
+
+    # すべての m2 数値から最小～最大
+    nums = re.findall(r"(\d+(?:\.\d+)?)\s*m2", txt)
+    if len(nums) >= 2:
+        vals = sorted(float(n) for n in nums)
+        return f"{vals[0]:g}m2～{vals[-1]:g}m2"
+    if len(nums) == 1:
+        return f"{nums[0]}m2"
+    return ""
+
 
 def fetch_property_details(url, driver):
     """
-    画像URL（?700優先）/ 住所 / 交通 / 間取り（2LDK・3LDK）/ 専有面積（56.63m2～68.38m2）
-    を抽出して返す。
+    画像URL（?700優先）/ 住所 / 交通 / 間取り（2LDK・3LDK）/ 専有面積（44.83m2～74.57m2形式）
+    を抽出して返す。<th>の次の<td>を丸ごと→不要削除→整形。
     """
     driver.get(url)
-    time.sleep(1.2)
+    time.sleep(1.2)  # JS描画の安定待ち
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    # 画像URL：a.image-popup 最優先 → img[src^=https://img.house.goo.ne.jp]
+    # 画像URL：a.image-popup 最優先 → img[src^=https://img.house.goo.ne.jp] を ?700 に寄せる
     image_url = ""
     a_img = soup.select_one('a.image-popup[href^="https://img.house.goo.ne.jp/"]')
     if a_img and a_img.has_attr("href"):
@@ -188,33 +134,21 @@ def fetch_property_details(url, driver):
         if img and img.has_attr("src"):
             image_url = re.sub(r"\?500\b", "?700", img["src"])
 
-    # ラベル直後テキスト
-    raw_address = _first_after_label_text(soup, LABELS["address"])
-    raw_access  = _first_after_label_text(soup, LABELS["access"])
-    raw_layout  = _first_after_label_text(soup, LABELS["layout"])
-    raw_area    = _first_after_label_text(soup, LABELS["area"])
+    # --- ラベル直の <td> を“丸ごと”取得してから整形 ---
+    address_raw = _get_td_by_label(soup, r"(住所|所在地)")
+    access_raw  = _get_td_by_label(soup, r"交通")
+    layout_raw  = _get_td_by_label(soup, r"(間取り|間取)")
+    area_raw    = _get_td_by_label(soup, r"専有面積")
 
-    # 最終整形（フォーマット保証）
-    address = _sanitize_cell(raw_address)
-    access  = _sanitize_cell(raw_access)
-    layout  = _normalize_layout(raw_layout or _text_without_title(soup))
-    area    = _normalize_area(raw_area   or _text_without_title(soup))
-
-    # 任意のデバッグ
-    if os.getenv("DEBUG_DETAIL", "").lower() in ("1", "true", "on"):
-        print("[DBG]", url)
-        print("      image_url:", image_url)
-        print("      address  :", address)
-        print("      access   :", access)
-        print("      layout   :", layout)
-        print("      area     :", area)
+    layout = _normalize_layout_from_td(layout_raw)
+    area   = _normalize_area_from_td(area_raw)
 
     return {
         "image_url": image_url,
-        "address": address,
-        "layout": layout,   # 例: "2LDK・3LDK"
-        "area": area,       # 例: "56.63m2～68.38m2"
-        "access": access,
+        "address": _sanitize_cell(address_raw),
+        "layout": _sanitize_cell(layout),   # 例: 2LDK・3LDK
+        "area":   _sanitize_cell(area),     # 例: 44.83m2～74.57m2
+        "access": _sanitize_cell(access_raw),
     }
 
 
@@ -225,8 +159,11 @@ def fetch_property_details(url, driver):
 def _normalize_name_from_title(title: str) -> str:
     """
     gooのtitleから余計な尾部を除去。
+    例:
+      "【goo住宅・不動産】ザ・パークハウス 東中野プレイス（価格・間取り） 物件情報｜新築マンション・分譲マンション"
+       → "ザ・パークハウス 東中野プレイス"
     """
-    t = title.strip()
+    t = (title or "").strip()
     t = re.sub(r"^【goo住宅・不動産】", "", t)
     t = re.sub(r"（価格・間取り）\s*物件情報｜新築マンション・分譲マンション.*$", "", t)
     t = re.sub(r"\s*物件情報｜新築マンション・分譲マンション.*$", "", t)
@@ -314,7 +251,7 @@ def write_to_sheet(properties, cred_path):
     today = datetime.now().strftime('%Y/%m/%d')
     new_count = 0
 
-    rows_to_append = []  # まとめて追加
+    rows_to_append = []  # まとめて追加（ズレ防止 & 高速）
 
     for p in properties:
         name = p['name']
@@ -331,21 +268,17 @@ def write_to_sheet(properties, cred_path):
         google_url = f"https://www.google.com/search?q={requests.utils.quote(name)}"
         official_url = get_official_url(name)
 
-        # 最終整形（形式を保証）
-        layout = _sanitize_cell(_normalize_layout(p.get('layout', '')))
-        area   = _sanitize_cell(_normalize_area(p.get('area', '')))
-
         row = [
-            today,                                 # A: 取得日付
-            _sanitize_cell(name),                  # B: 物件名
-            _sanitize_cell(manshon_url),           # C: マンコミ検索URL
-            _sanitize_cell(google_url),            # D: Google検索URL
-            _sanitize_cell(official_url),          # E: 公式URL
-            _sanitize_cell(p.get('image_url','')), # F: 画像URL
-            _sanitize_cell(p.get('address','')),   # G: 住所
-            layout,                                # H: 間取り（例: 2LDK・3LDK）
-            area,                                  # I: 専有面積（例: 56.63m2～68.38m2）
-            _sanitize_cell(p.get('access','')),    # J: 交通
+            today,                                   # A: 取得日付
+            _sanitize_cell(name),                    # B: 物件名
+            _sanitize_cell(manshon_url),             # C: マンコミ検索URL
+            _sanitize_cell(google_url),              # D: Google検索URL
+            _sanitize_cell(official_url),            # E: 公式URL
+            _sanitize_cell(p.get('image_url','')),   # F: 画像URL
+            _sanitize_cell(p.get('address','')),     # G: 住所
+            _sanitize_cell(p.get('layout','')),      # H: 間取り（例: 2LDK・3LDK）
+            _sanitize_cell(p.get('area','')),        # I: 専有面積（例: 44.83m2～74.57m2）
+            _sanitize_cell(p.get('access','')),      # J: 交通
         ]
         # 必ず10列（A～J）に揃える
         row += [""] * (10 - len(row))
