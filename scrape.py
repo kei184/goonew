@@ -180,9 +180,8 @@ def fetch_property_details(url, driver):
         "layout": _sanitize_cell(layout),
         "area": _sanitize_cell(area),
         "access": _sanitize_cell(access_raw),
-        "total_units": _sanitize_cell(total_units_raw),  # ← ✅ 追加分
+        "total_units": _sanitize_cell(total_units_raw),  # ← 総戸数
     }
-
 
 
 # ==============================
@@ -269,7 +268,7 @@ def get_official_url(query):
     return ''
 
 
-# === 7. スプレッドシートへ記載（A列から固定10列, RAW, 改行/タブ除去）===
+# === 7. スプレッドシートへ記載（A列から固定11列, RAW, 改行/タブ除去）===
 def _next_empty_row_in_col_a(sheet):
     """A列の次の空行番号（1始まり）を返す。A列が常に埋まる前提でシンプル・高速。"""
     col_a = sheet.col_values(1)  # A列
@@ -310,14 +309,15 @@ def write_to_sheet(properties, cred_path):
             _sanitize_cell(p.get('layout','')),      # H: 間取り（例: 2LDK・3LDK）
             _sanitize_cell(p.get('area','')),        # I: 専有面積（例: 44.83㎡～74.57㎡）
             _sanitize_cell(p.get('access','')),      # J: 交通
-            _sanitize_cell(p.get('total_units','')),     # K: 総戸数
+            _sanitize_cell(p.get('total_units','')), # K: 総戸数
         ]
-        # 必ず10列（A～J）に揃える
-        row += [""] * (10 - len(row))
+        # 必ず11列（A～K）に揃える（念のため）
+        if len(row) < 11:
+            row += [""] * (11 - len(row))
 
-        # ★ ここがポイント：A列の次の空行を計算して、明示的に A{r}:J{r} に書き込む
+        # A列の次の空行を計算して、明示的に A{r}:K{r} に書き込む
         r = _next_empty_row_in_col_a(sheet)
-        sheet.update(f"A{r}:J{r}", [row], value_input_option='RAW')
+        sheet.update(f"A{r}:K{r}", [row], value_input_option='RAW')
 
         new_count += 1
         time.sleep(0.5)  # レート制御（必要に応じて調整）
