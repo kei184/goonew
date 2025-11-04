@@ -138,8 +138,8 @@ def _normalize_area_from_td(raw: str) -> str:
 
 def fetch_property_details(url, driver):
     """
-    画像URL（?700優先）/ 住所 / 交通 / 間取り（2LDK・3LDK）/ 専有面積（xx.xx㎡～yy.yy㎡）
-    を抽出して返す。<th>の次の<td>を丸ごと→不要削除→整形。
+    画像URL / 住所 / 交通 / 間取り（2LDK・3LDK） / 専有面積（xx.xx㎡～yy.yy㎡） / 総戸数
+    を抽出して返す。
     """
     driver.get(url)
     time.sleep(1.2)  # JS描画の安定待ち
@@ -165,13 +165,24 @@ def fetch_property_details(url, driver):
     layout = _normalize_layout_from_td(layout_raw)
     area   = _normalize_area_from_td(area_raw)
 
+    # ✅ 総戸数（ラベル表現ゆれ対応）
+    total_units_raw = ""
+    for tr in soup.select("table tr"):
+        th = tr.find("th")
+        td = tr.find("td")
+        if th and td and re.search(r"総戸数", th.get_text()):
+            total_units_raw = td.get_text(" ", strip=True)
+            break
+
     return {
         "image_url": _sanitize_cell(image_url),
         "address": _sanitize_cell(address_raw),
-        "layout": _sanitize_cell(layout),   # 例: 2LDK・3LDK
-        "area":   _sanitize_cell(area),     # 例: 44.83㎡～74.57㎡
+        "layout": _sanitize_cell(layout),
+        "area": _sanitize_cell(area),
         "access": _sanitize_cell(access_raw),
+        "total_units": _sanitize_cell(total_units_raw),  # ← ✅ 追加分
     }
+
 
 
 # ==============================
