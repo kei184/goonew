@@ -310,6 +310,7 @@ def write_to_sheet(properties, cred_path):
             _sanitize_cell(p.get('layout','')),      # H: 間取り（例: 2LDK・3LDK）
             _sanitize_cell(p.get('area','')),        # I: 専有面積（例: 44.83㎡～74.57㎡）
             _sanitize_cell(p.get('access','')),      # J: 交通
+            _sanitize_cell(p.get('total_units','')),     # K: 総戸数
         ]
         # 必ず10列（A～J）に揃える
         row += [""] * (10 - len(row))
