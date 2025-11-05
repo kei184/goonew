@@ -136,6 +136,23 @@ def _normalize_area_from_td(raw: str) -> str:
     return ""
 
 
+def _normalize_total_units(raw: str) -> str:
+    """
+    総戸数の文字列から「数字だけ」を取り出す。
+    例:
+      '120戸（他店舗1戸含む）' → '120'
+      '全150戸' → '150'
+    """
+    if not raw:
+        return ""
+    s = raw.replace("\u00A0", " ").replace("\u200B", "")
+    # 全角数字→半角 / カンマ除去
+    s = s.translate(str.maketrans("０１２３４５６７８９，", "0123456789,"))
+    s = s.replace(",", "")
+    m = re.search(r"(\d+)", s)
+    return m.group(1) if m else ""
+
+
 def fetch_property_details(url, driver):
     """
     画像URL / 住所 / 交通 / 間取り（2LDK・3LDK） / 専有面積（xx.xx㎡～yy.yy㎡） / 総戸数
@@ -165,7 +182,7 @@ def fetch_property_details(url, driver):
     layout = _normalize_layout_from_td(layout_raw)
     area   = _normalize_area_from_td(area_raw)
 
-    # ✅ 総戸数（ラベル表現ゆれ対応）
+    # 総戸数（ラベル表現ゆれ対応）: 「総戸数」を含む th を探す
     total_units_raw = ""
     for tr in soup.select("table tr"):
         th = tr.find("th")
@@ -173,6 +190,7 @@ def fetch_property_details(url, driver):
         if th and td and re.search(r"総戸数", th.get_text()):
             total_units_raw = td.get_text(" ", strip=True)
             break
+    total_units = _normalize_total_units(total_units_raw)
 
     return {
         "image_url": _sanitize_cell(image_url),
@@ -180,8 +198,9 @@ def fetch_property_details(url, driver):
         "layout": _sanitize_cell(layout),
         "area": _sanitize_cell(area),
         "access": _sanitize_cell(access_raw),
-        "total_units": _sanitize_cell(total_units_raw),  # ← 総戸数
+        "total_units": _sanitize_cell(total_units),  # ← 数字だけにした総戸数
     }
+
 
 
 # ==============================
@@ -309,7 +328,7 @@ def write_to_sheet(properties, cred_path):
             _sanitize_cell(p.get('layout','')),      # H: 間取り（例: 2LDK・3LDK）
             _sanitize_cell(p.get('area','')),        # I: 専有面積（例: 44.83㎡～74.57㎡）
             _sanitize_cell(p.get('access','')),      # J: 交通
-            _sanitize_cell(p.get('total_units','')), # K: 総戸数
+            _sanitize_cell(p.get('total_units','')), # K: 総戸数（数字のみ）
         ]
         # 必ず11列（A～K）に揃える（念のため）
         if len(row) < 11:
