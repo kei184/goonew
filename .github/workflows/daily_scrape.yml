@@ -1,0 +1,56 @@
+name: 日次スクレイピング実行
+
+on:
+  schedule:
+    # 毎日 UTC 0:00 = 日本時間 9:00 (JST = UTC+9)
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 手動実行も可能にする
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+      
+      - name: Python環境のセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 依存関係のインストール
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Google Chrome と ChromeDriver のインストール
+        run: |
+          # Chrome安定版をインストール
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          
+          # ChromeDriverをインストール
+          CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
+          wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}" -O /tmp/latest_version
+          CHROMEDRIVER_VERSION=$(cat /tmp/latest_version)
+          wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+          unzip chromedriver_linux64.zip
+          sudo mv chromedriver /usr/bin/chromedriver
+          sudo chmod +x /usr/bin/chromedriver
+      
+      - name: スクレイピング実行
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+        run: |
+          python scrape.py
+      
+      - name: 実行結果を通知（失敗時）
+        if: failure()
+        run: |
+          echo "❌ スクレイピング実行に失敗しました"
+          echo "ログを確認してください: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
