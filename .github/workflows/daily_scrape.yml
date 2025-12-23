@@ -32,14 +32,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
           
-          # ChromeDriverをインストール
-          CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
-          wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}" -O /tmp/latest_version
-          CHROMEDRIVER_VERSION=$(cat /tmp/latest_version)
-          wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-          unzip chromedriver_linux64.zip
-          sudo mv chromedriver /usr/bin/chromedriver
+          # ChromeDriverをインストール（新しいChrome for Testing API使用）
+          CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
+          echo "Chrome version: $CHROME_VERSION"
+          
+          # Chrome for Testing APIから対応するChromeDriverのURLを取得
+          CHROMEDRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json" | \
+            jq -r ".versions[] | select(.version==\"$CHROME_VERSION\") | .downloads.chromedriver[] | select(.platform==\"linux64\") | .url" | head -1)
+          
+          # URLが取得できなかった場合は最新の安定版を使用
+          if [ -z "$CHROMEDRIVER_URL" ]; then
+            echo "完全一致が見つからないため、最新の安定版ChromeDriverを使用します"
+            CHROMEDRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | \
+              jq -r ".channels.Stable.downloads.chromedriver[] | select(.platform==\"linux64\") | .url")
+          fi
+          
+          echo "ChromeDriver URL: $CHROMEDRIVER_URL"
+          wget -q "$CHROMEDRIVER_URL" -O chromedriver-linux64.zip
+          unzip chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/bin/chromedriver
           sudo chmod +x /usr/bin/chromedriver
+          
+          # バージョン確認
+          echo "ChromeDriver version: $(chromedriver --version)"
       
       - name: スクレイピング実行
         env:
