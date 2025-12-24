@@ -1,8 +1,8 @@
 name: Scrape goo properties
 
 on:
-  schedule:
-    - cron: '0 1 * * *'
+  # schedule:  # 無効化: 日次スクレイピング実行(daily_scrape.yml)に統合
+  #   - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
