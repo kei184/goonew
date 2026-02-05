@@ -40,8 +40,11 @@ jobs:
           CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
           echo "Detected Chrome version: $CHROME_VERSION"
 
-          DRIVER_URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
-            | jq -r --arg ver "$CHROME_VERSION" '.channels.Stable.downloads.chromedriver[] | select(.platform == "linux64") | .url')
+          CHROME_MAJOR_VERSION=$(echo "$CHROME_VERSION" | cut -d. -f1)
+          echo "Detected Chrome Major Version: $CHROME_MAJOR_VERSION"
+
+          DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone-with-downloads.json" \
+            | jq -r --arg ver "$CHROME_MAJOR_VERSION" '.milestones[$ver].downloads.chromedriver[] | select(.platform == "linux64") | .url')
 
           if [ -z "$DRIVER_URL" ]; then
             echo "❌ ChromeDriver URL が見つかりません"
