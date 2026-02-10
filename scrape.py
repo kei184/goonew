@@ -313,14 +313,13 @@ def write_to_sheet(properties, cred_path):
             print(f"⏭️ スキップ（重複）: {name}")
             continue
 
-        manshon_url = f"https://www.e-mansion.co.jp/bbs/search/{requests.utils.quote(name)}"
         google_url = f"https://www.google.com/search?q={requests.utils.quote(name)}"
         official_url = get_official_url(name)
 
         row = [
             today,                                   # A: 取得日付
             _sanitize_cell(name),                    # B: 物件名
-            _sanitize_cell(manshon_url),             # C: マンコミ検索URL
+            "",                                      # C: （空欄）
             _sanitize_cell(google_url),              # D: Google検索URL
             _sanitize_cell(official_url),            # E: 公式URL
             _sanitize_cell(p.get('image_url','')),   # F: 画像URL
